@@ -1,18 +1,22 @@
 const express = require("express");
-const connectDB = require("./config/db");
-
-// Load environment variables
 require("dotenv").config();
+
+const connectDB = require("./config/db");
+const goalRoutes = require("./routes/goal.routes");
+const authMiddleware = require("./middlewares/auth");
+
+const app = express();
 
 // Connect to MongoDB
 connectDB();
 
-const app = express();
-
 // Middleware
 app.use(express.json());
 
-// Example route
+// Routes
+app.use("/api/goals", authMiddleware, goalRoutes);
+
+// Test route
 app.get("/", (req, res) => {
   res.send("WalletCare API is running...");
 });
