@@ -3,11 +3,23 @@ const Goal = require("../models/Goal");
 // CREATE GOAL
 exports.createGoal = async (req, res) => {
   try {
+    // 1️⃣ Take data from request body
+    const { title, targetAmount, targetDate } = req.body;
+
+    // 2️⃣ Create goal in database
+    
+    //  const goal = await Goal.create({
+    //     userId: req.user.id,
+    //     ...req.body,
+    //   });
+
     const goal = await Goal.create({
-      userId: req.user.id,
-      ...req.body,
+      title,
+      targetAmount,
+      targetDate,
     });
 
+    // 3️⃣ Send response
     res.status(201).json({
       success: true,
       message: "Goal created successfully",
@@ -24,9 +36,7 @@ exports.createGoal = async (req, res) => {
 // GET ALL GOALS
 exports.getGoals = async (req, res) => {
   try {
-    const goals = await Goal.find({
-      userId: req.user.id,
-    });
+    const goals = await Goal.find();
 
     res.status(200).json({
       success: true,
