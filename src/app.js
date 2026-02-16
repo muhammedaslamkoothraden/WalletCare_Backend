@@ -1,20 +1,27 @@
 const express = require("express");
-const connectDB = require("./config/db");
+const cors = require("cors");
+const helmet = require("helmet");
 
-// Load environment variables
-require("dotenv").config();
-
-// Connect to MongoDB
-connectDB();
+const authRoutes = require("./routes/authRoutes");
 
 const app = express();
 
-// Middleware
+// Global middlewares
+app.use(helmet());
+app.use(cors());
 app.use(express.json());
 
-// Example route
+// Health check
 app.get("/", (req, res) => {
   res.send("WalletCare API is running...");
+});
+
+// Mount routes
+app.use("/api/auth", authRoutes);
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ message: "Route not found" });
 });
 
 module.exports = app;
