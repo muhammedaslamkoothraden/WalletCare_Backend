@@ -1,13 +1,13 @@
 // routes/dev.wallet.routes.js
 const express = require('express');
 const router = express.Router();
-const { createWalletForUser } = require('../services/wallet.service');
+const { initializeWalletForUser } = require('../services/wallet.service');
 
 router.post('/init-wallet', async (req, res) => {
   try {
     const { userId } = req.body;
 
-    const wallet = await createWalletForUser(userId);
+    const wallet = await initializeWalletForUser(userId);
 
     res.status(200).json({
       message: 'Wallet initialized (dev only)',
