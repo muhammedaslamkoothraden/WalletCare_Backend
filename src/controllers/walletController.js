@@ -7,10 +7,11 @@ const Wallet = require('../models/wallet');
 exports.getWalletByUserId = async (req, res) => {
   try {
     const { userId } = req.params;
+    
 
     // Validate input
-    if (!userId) {
-      return res.status(400).json({ error: 'UserId parameter is required.' });
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ error: 'UserId parameter is required and must be a valid ObjectId.' });
     }
 
     // Fetch wallet

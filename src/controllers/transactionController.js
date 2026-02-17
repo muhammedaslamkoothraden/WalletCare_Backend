@@ -13,6 +13,16 @@ exports.addTransaction = async (req, res) => {
     if (!userId || !walletId || !amount || !type || !category) {
       return res.status(400).json({ error: 'Missing required fields: userId, walletId, amount, type, category' });
     }
+    // Amount validation
+    if (
+      typeof amount !== 'number' ||
+      !Number.isFinite(amount) ||
+      amount <= 0
+    ) {
+      return res.status(400).json({
+        error: 'Amount must be a positive number'
+      });
+    }
 
     // Fetch wallet
     const wallet = await Wallet.findById(walletId);
@@ -37,6 +47,7 @@ exports.addTransaction = async (req, res) => {
     // Save both
     await transaction.save();
     await wallet.save();
+
 
     res.status(201).json({
       message: 'Transaction successful',
@@ -78,3 +89,4 @@ exports.getHistory = async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 };
+
