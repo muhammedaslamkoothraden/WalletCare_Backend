@@ -1,10 +1,16 @@
+const mongoose = require('mongoose');
 const Wallet = require('../models/wallet');
 
-/**
- * Automatically initializes a wallet for a newly registered user.
- * Safe to call multiple times (idempotent).
- */
 const initializeWalletForUser = async (userId) => {
+
+  if (!userId) {
+    throw new Error('userId is required');
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    throw new Error('Invalid userId');
+  }
+
   return Wallet.findOneAndUpdate(
     { userId },
     {
