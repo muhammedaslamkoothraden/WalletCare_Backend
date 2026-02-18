@@ -2,6 +2,10 @@ const express = require("express");
 const connectDB = require("./config/db");
 const cors = require("cors");
 const helmet = require("helmet");
+const walletRoutes = require("./routes/wallet.routes")
+const transactionRoutes = require("./routes/transaction.routes")
+
+
 
 // Load environment variables
 require("dotenv").config();
