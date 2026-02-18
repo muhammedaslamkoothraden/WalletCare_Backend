@@ -1,4 +1,6 @@
 const User = require("../models/user");
+const { initializeWalletForUser } = require("../services/wallet.service");
+
 
 // Register logic
 exports.registerUser = async (req, res) => {
@@ -20,6 +22,8 @@ exports.registerUser = async (req, res) => {
     // Create new user
     // Password will be automatically hashed by pre-save hook in User model
     const user = await User.create({ email, password, phone });
+    // 2. Auto-initialize wallet 
+    await initializeWalletForUser(user._id);
 
     // Send success response (do NOT return password)
     res.status(201).json({

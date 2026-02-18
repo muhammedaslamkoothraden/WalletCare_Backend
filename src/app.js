@@ -12,7 +12,6 @@ const app = express();
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
-app.use(  "/api/dev/wallet", devwallet);
 app.use("/api/wallet",  walletRoutes);
 app.use("/api/transaction", transactionRoutes);
 app.use("/api/auth", authRoutes);
