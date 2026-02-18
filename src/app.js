@@ -1,5 +1,7 @@
 const express = require("express");
 const connectDB = require("./config/db");
+const cors = require("cors");
+const helmet = require("helmet");
 
 // Load environment variables
 require("dotenv").config();
@@ -21,7 +23,6 @@ app.use("/api/auth", authRoutes);
 app.get("/", (req, res) => {
   res.send("WalletCare API is running...");
 });
-
 
 
 
