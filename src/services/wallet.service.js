@@ -7,6 +7,7 @@ const initializeWalletForUser = async (userId) => {
     throw new Error('userId is required');
   }
 
+
   if (!mongoose.Types.ObjectId.isValid(userId)) {
     throw new Error('Invalid userId');
   }
