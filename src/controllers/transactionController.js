@@ -18,7 +18,8 @@ exports.addTransaction = async (req, res) => {
       typeof amount !== 'number' ||
       !Number.isFinite(amount) ||
       amount <= 0
-    ) {
+    ) 
+    {
       return res.status(400).json({
         error: 'Amount must be a positive number'
       });

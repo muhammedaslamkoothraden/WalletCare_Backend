@@ -5,36 +5,45 @@ const { initializeWalletForUser } = require("../services/wallet.service");
 // Register logic
 exports.registerUser = async (req, res) => {
   try {
-    // Extract user data from request body
-    const { email, password, phone } = req.body;
+    const { name, email, password, phone } = req.body;
 
     // Basic validation
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email and password are required" });
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: "Name, email and password are required" });
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check existing user
+    const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
       return res.status(400).json({ message: "Email already exists" });
     }
 
-    // Create new user
-    // Password will be automatically hashed by pre-save hook in User model
-    const user = await User.create({ email, password, phone });
-    // 2. Auto-initialize wallet 
+    // Optional: basic password strength check
+    if (password.length < 8) {
+      return res.status(400).json({ message: "Password must be at least 8 characters" });
+    }
+
+    // Create user
+    const user = await User.create({
+      name,
+      email: normalizedEmail,
+      password,
+      phone
+    });
+
+    // Initialize wallet
     await initializeWalletForUser(user._id);
 
-    // Send success response (do NOT return password)
-    res.status(201).json({
+    return res.status(201).json({
       message: "User created successfully",
       userId: user._id
     });
 
   } catch (error) {
-    // Log error internally (do not expose sensitive details to client)
     console.error("Register Error:", error);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error" });
   }
 };
 
