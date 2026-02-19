@@ -1,5 +1,7 @@
 const User = require("../models/user");
 const { initializeWalletForUser } = require("../services/wallet.service");
+const { sendOtp } = require("../services/otp.service");
+
 
 
 // Register logic
@@ -35,6 +37,9 @@ exports.registerUser = async (req, res) => {
 
     // Initialize wallet
     await initializeWalletForUser(user._id);
+
+    //  SEND OTP AFTER USER CREATION
+    await sendOtp(normalizedEmail);
 
     return res.status(201).json({
       message: "User created successfully",

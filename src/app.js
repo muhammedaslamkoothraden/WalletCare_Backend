@@ -14,8 +14,7 @@ const authMiddleware = require("./middlewares/auth");
 
 const app = express();
 
-// Connect to MongoDB
-connectDB();
+
 
 // Global middlewares
 app.use(helmet());
