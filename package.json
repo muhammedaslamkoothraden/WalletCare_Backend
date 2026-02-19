@@ -13,9 +13,11 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "helmet": "^8.1.0",
     "mogoose": "^0.0.1-security",
     "mongodb": "^7.1.0",
     "mongoose": "^9.1.5",
