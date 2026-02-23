@@ -7,13 +7,12 @@ const helmet = require("helmet");
 
 const walletRoutes = require("./routes/wallet.routes");
 const transactionRoutes = require("./routes/transaction.routes");
-const authRoutes = require("./routes/authRoutes");
+const authRoutes = require("./routes/auth.routes");
 const goalRoutes = require("./routes/goal.routes");
 
 const authMiddleware = require("./middlewares/auth");
 
 const app = express();
-
 
 
 // Global middlewares
