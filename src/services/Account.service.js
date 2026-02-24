@@ -5,7 +5,7 @@ const Account = require("../models/Account");
  * @param {ObjectId} userId - The ID of the newly created user.
  * @param {ClientSession} session - The active Mongoose transaction session.
  */
-const initializeAcountForUserr = async (userId, session) => {
+const initializeAccountForUser = async (userId, session) => {
   // Check if an account already exists for this user (Safety check)
   const existing = await Account.findOne({ userId }).session(session);
   if (existing) return existing;
@@ -26,4 +26,4 @@ const initializeAcountForUserr = async (userId, session) => {
   return defaultAccount;
 };
 
-module.exports = { initializeAcountForUserr };
+module.exports = { initializeAccountForUser };

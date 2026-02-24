@@ -25,21 +25,22 @@ exports.sendOtp = async (identifier, purpose = "signup") => {
   await sendOtpEmail(normalizedIdentifier, otp);
 };
 
-exports.verifyOtp = async (identifier, otp, purpose = "signup") => {
+// Add session to the parameters
+exports.verifyOtp = async (identifier, otp, purpose = "signup", session = null) => {
   const normalizedIdentifier = identifier.toLowerCase().trim();
 
+  // 1. Pass session to findOne
   const record = await Otp.findOne({
     identifier: normalizedIdentifier,
     purpose
-  });
+  }).session(session);
 
   if (!record) {
     throw new Error("OTP expired or not found");
   }
 
-  // Do not rely only on TTL index (TTL cleanup is not immediate)
   if (record.expiresAt < new Date()) {
-    await Otp.deleteOne({ _id: record._id });
+    await Otp.deleteOne({ _id: record._id }).session(session); // Pass session
     throw new Error("OTP expired");
   }
 
@@ -47,19 +48,17 @@ exports.verifyOtp = async (identifier, otp, purpose = "signup") => {
 
   if (!isValid) {
     record.attempts = (record.attempts || 0) + 1;
-    await record.save();
+    await record.save({ session }); // Pass session
 
-    // Lock after 5 failed attempts
     if (record.attempts >= 5) {
-      await Otp.deleteOne({ _id: record._id });
+      await Otp.deleteOne({ _id: record._id }).session(session); // Pass session
       throw new Error("Maximum OTP attempts exceeded");
     }
-
     throw new Error("Invalid OTP");
   }
 
-  // OTP consumed → delete immediately
-  await Otp.deleteOne({ _id: record._id });
+  // 2. Pass session to the final deletion
+  await Otp.deleteOne({ _id: record._id }).session(session);
 
   return true;
 };
