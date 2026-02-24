@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 const { User, PendingUser } = require("../models/user");
-const { initializeWalletForUser } = require("../services/wallet.service");
+const { initializeAcountForUserr } = require("../services/Acount.service");
 const { verifyOtp } = require("../services/otp.service");
 
 exports.verifyEmailOtp = async (req, res) => {
@@ -42,8 +42,8 @@ exports.verifyEmailOtp = async (req, res) => {
 
     await newUser.save({ session });
 
-    // 4. Initialize wallet inside transaction
-    await initializeWalletForUser(newUser._id, session); // make sure wallet.service supports session
+    // 4. Initialize account inside transaction
+    await initializeAcountForUserr(newUser._id, session); // make sure Acount.service supports session
 
     // 5. Delete pending user
     await PendingUser.deleteOne({ _id: pendingUser._id }).session(session);
