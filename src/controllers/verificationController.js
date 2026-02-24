@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 const { User, PendingUser } = require("../models/user");
-const { initializeAcountForUserr } = require("../services/Acount.service");
+const { initializeAcountForUserr } = require("../services/Account.service");
 const { verifyOtp } = require("../services/otp.service");
 
 exports.verifyEmailOtp = async (req, res) => {

@@ -1,4 +1,4 @@
-const Account = require('../models/account');
+const Account = require("../models/Account");
 
 /**
  * @description Initializes the default Cash account for a new user.
