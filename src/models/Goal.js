@@ -12,6 +12,24 @@ const goalSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    accountType: {
+      type: String,
+      required: true,
+      enum: ["wallet", "bank", "cash", "savings"],
+      
+    },
+    category: {
+      type: String,
+      required: true,
+      enum: [
+        "Savings",
+        "Travel",
+        "Education",
+        "Emergency",
+        "Investment",
+        "Other"
+      ]
+    },
     targetAmount: {
       type: Number,
       required: true,

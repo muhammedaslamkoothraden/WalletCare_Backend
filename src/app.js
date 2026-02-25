@@ -1,7 +1,6 @@
 const express = require("express");
 require("dotenv").config();
 
-const connectDB = require("./config/db");
 const cors = require("cors");
 const helmet = require("helmet");
 
@@ -13,9 +12,6 @@ const goalRoutes = require("./routes/goal.routes");
 const authMiddleware = require("./middlewares/auth");
 
 const app = express();
-
-// Connect to MongoDB
-connectDB();
 
 // Global middlewares
 app.use(helmet());

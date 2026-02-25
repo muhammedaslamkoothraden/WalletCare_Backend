@@ -1,11 +1,18 @@
 const Goal = require("../models/Goal");
+const {
+  calculateGoalDetails,
+  calculateSummary
+} = require("../services/goal.service");
+const Wallet = require("../models/wallet");
+const { processGoalDeposit } = require("../services/goal.service");
+
 
 // CREATE GOAL
 exports.createGoal = async (req, res) => {
   try {
-    const { title, targetAmount, targetDate } = req.body;
+    const { title, category, targetAmount, targetDate, accountType } = req.body;
 
-    if (!title || !targetAmount || !targetDate) {
+    if (!title || !category || !targetAmount || !targetDate || !accountType) {
       return res.status(400).json({
         success: false,
         message: "All fields are required"
@@ -22,82 +29,54 @@ exports.createGoal = async (req, res) => {
     const goal = await Goal.create({
       userId: req.user.id,
       title,
+      category,
       targetAmount,
-      targetDate,
+      accountType,
+      targetDate
     });
 
     res.status(201).json({
       success: true,
       message: "Goal created successfully",
-      data: goal,
+      data: goal
     });
 
   } catch (error) {
-    res.status(400).json({
+    res.status(500).json({
       success: false,
-      message: error.message,
+      message: error.message
     });
   }
 };
 
+
+
 // GET ALL GOALS
 exports.getGoals = async (req, res) => {
   try {
+
     const goals = await Goal.find({
       userId: req.user.id
     });
 
-    const goalsWithPercentage = goals.map(goal => {
-      const percentage = Math.min(
-        (goal.currentAmount / goal.targetAmount) * 100,
-        100
-      );
-
-      return {
-        ...goal.toObject(),
-        percentage: Number(percentage.toFixed(2))
-      };
-    });
-
-    const today = new Date();
-
-    const goalsWithDetails = goals.map(goal => {
-
-      const percentage = Math.min(
-        (goal.currentAmount / goal.targetAmount) * 100,
-        100
-      );
-
-      const isOverdue =
-        goal.status !== "completed" &&
-        today > goal.targetDate;
-
-      return {
-        ...goal.toObject(),
-        percentage: Number(percentage.toFixed(2)),
-        overdue: isOverdue
-      };
-    });
+    const goalsWithDetails = calculateGoalDetails(goals);
 
     res.status(200).json({
       success: true,
       data: goalsWithDetails
     });
 
-    res.status(200).json({
-      success: true,
-      data: goals,
-    });
-
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: error.message,
+      message: error.message
     });
   }
 };
 
-//update goal
+
+
+// UPDATE GOAL
 exports.updateGoal = async (req, res) => {
   try {
 
@@ -139,11 +118,12 @@ exports.updateGoal = async (req, res) => {
     }
 
     if (req.body.title) goal.title = req.body.title;
+    if (req.body.category) goal.category = req.body.category;
     if (req.body.targetAmount) goal.targetAmount = req.body.targetAmount;
     if (req.body.targetDate) goal.targetDate = req.body.targetDate;
     if (req.body.currentAmount >= 0) goal.currentAmount = req.body.currentAmount;
 
-    // AUTO COMPLETION LOGIC
+    // AUTO COMPLETION
     if (goal.currentAmount >= goal.targetAmount) {
       goal.status = "completed";
     }
@@ -164,28 +144,21 @@ exports.updateGoal = async (req, res) => {
   }
 };
 
-//goal summary
+
+
+// GOAL SUMMARY
 exports.getGoalSummary = async (req, res) => {
   try {
 
-    const goals = await Goal.find({ userId: req.user.id });
+    const goals = await Goal.find({
+      userId: req.user.id
+    });
 
-    const totalGoals = goals.length;
-    const completedGoals = goals.filter(g => g.status === "completed").length;
-    const activeGoals = goals.filter(g => g.status === "active").length;
-
-    const totalTargetAmount = goals.reduce((sum, g) => sum + g.targetAmount, 0);
-    const totalSavedAmount = goals.reduce((sum, g) => sum + g.currentAmount, 0);
+    const summary = calculateSummary(goals);
 
     res.status(200).json({
       success: true,
-      data: {
-        totalGoals,
-        activeGoals,
-        completedGoals,
-        totalTargetAmount,
-        totalSavedAmount
-      }
+      data: summary
     });
 
   } catch (error) {
@@ -195,6 +168,8 @@ exports.getGoalSummary = async (req, res) => {
     });
   }
 };
+
+
 
 // DELETE GOAL
 exports.deleteGoal = async (req, res) => {
@@ -209,15 +184,13 @@ exports.deleteGoal = async (req, res) => {
       });
     }
 
-    // Ownership check
     if (goal.userId.toString() !== req.user.id.toString()) {
       return res.status(403).json({
         success: false,
-        message: "Not authorized to delete this goal"
+        message: "Not authorized"
       });
     }
 
-    // Optional: Prevent deleting completed goals
     if (goal.status === "completed") {
       return res.status(400).json({
         success: false,
@@ -242,5 +215,64 @@ exports.deleteGoal = async (req, res) => {
 
 
 
+// DEPOSIT TO GOAL
+exports.depositToGoal = async (req, res) => {
+  try {
+    const { amount } = req.body;
 
+    if (!amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Amount must be positive"
+      });
+    }
 
+    const goal = await Goal.findById(req.params.id);
+
+    if (!goal) {
+      return res.status(404).json({
+        success: false,
+        message: "Goal not found"
+      });
+    }
+
+    if (goal.userId.toString() !== req.user.id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "Not authorized"
+      });
+    }
+
+    if (goal.status === "completed") {
+      return res.status(400).json({
+        success: false,
+        message: "Goal already completed"
+      });
+    }
+
+    const wallet = await Wallet.findOne({
+      userId: req.user.id
+    });
+
+    if (!wallet) {
+      return res.status(404).json({
+        success: false,
+        message: "Wallet not found"
+      });
+    }
+
+    const updatedGoal = await processGoalDeposit(goal, wallet, amount);
+
+    res.status(200).json({
+      success: true,
+      message: "Amount deposited successfully",
+      data: updatedGoal
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
