@@ -1,8 +1,8 @@
-// const express = require('express');
-// const router = express.Router();
-// const transactionController = require('../controllers/transactionController');
+const express = require('express');
+const router = express.Router();
+const transactionController = require('../controllers/transactionController');
 
-// router.post('/add', transactionController.addTransaction);
-// router.get('/history/:userId', transactionController.getHistory);
+router.post('/add', transactionController.addTransaction);
+router.get('/history/:userId', transactionController.getHistory);
 
-// module.exports = router;
+module.exports = router;

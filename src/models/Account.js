@@ -1,9 +1,9 @@
 const mongoose = require('mongoose');
 
 /**
- * @description Account Schema for Ledger-based Wallet System
- * Handles both physical 'CASH' and digital 'ACCOUNT' types.
- * Enforces strict financial invariants.
+ * Account Schema for WalletCare
+ * Handles both physical 'CASH' and digital 'BANK' types.
+ * Demonstrates: Precision math, Invariant protection, and Transactional safety.
  */
 const AccountSchema = new mongoose.Schema(
   {
@@ -14,18 +14,18 @@ const AccountSchema = new mongoose.Schema(
       index: true
     },
     name: {
-      type: String, // e.g., "Cash in Hand", "HDFC Bank", "Savings Goal"
+      type: String,
       required: true,
       trim: true,
-      maxlength: 32
+      maxlength: 32 // Keeps UI clean in Flutter
     },
     type: {
       type: String,
-      enum: ['CASH', 'ACCOUNT'], 
+      enum: ['CASH', 'BANK', 'SAVINGS'], 
       required: true,
       uppercase: true
     },
-    // Using Decimal128 for high-precision financial math
+    // High-precision financial math using Decimal128
     availableBalance: {
       type: mongoose.Schema.Types.Decimal128,
       default: "0.00",
@@ -43,11 +43,13 @@ const AccountSchema = new mongoose.Schema(
     currency: {
       type: String,
       default: 'INR',
-      uppercase: true
+      uppercase: true,
+      minlength: 3,
+      maxlength: 3
     },
     isDefault: {
       type: Boolean,
-      default: false // Set to true ONLY for the system-generated 'Cash' account
+      default: false 
     },
     isActive: {
       type: Boolean,
@@ -56,6 +58,7 @@ const AccountSchema = new mongoose.Schema(
   },
   { 
     timestamps: true,
+    optimisticConcurrency: true, // Prevents race conditions during updates
     toJSON: { getters: true },
     toObject: { getters: true }
   }
@@ -65,15 +68,31 @@ const AccountSchema = new mongoose.Schema(
 // Ensures a user cannot have two accounts with the same name (e.g., two "Cash" accounts)
 AccountSchema.index({ userId: 1, name: 1 }, { unique: true });
 
+// --- VIRTUALS ---
+// Useful for the Flutter frontend to get a simple string/number
+AccountSchema.virtual('formattedTotal').get(function() {
+  return this.totalBalance ? this.totalBalance.toString() : "0.00";
+});
+
 // --- MIDDLEWARE (The Guardian) ---
 /**
  * Invariant: totalBalance MUST ALWAYS equal availableBalance + reservedBalance.
- * This hook prevents "Balance Drift" caused by logic bugs.
+ * This runs before every .save() call to prevent "Balance Drift".
  */
-// Fix in src/models/Account.js
-AccountSchema.pre('save', async function() {
-  // Your logic (like setting timestamps or generating IDs)
-  // No next() needed here!
+AccountSchema.pre('save', function(next) {
+  try {
+    const avail = parseFloat(this.availableBalance.toString() || "0");
+    const res = parseFloat(this.reservedBalance.toString() || "0");
+    
+    // Automatically set totalBalance
+    this.totalBalance = mongoose.Types.Decimal128.fromString((avail + res).toFixed(2));
+    
+    // Successfully move to the next middleware or save operation
+    // next();
+  } catch (error) {
+    // If math fails, pass the error to the next step to stop the save
+    next(error);
+  }
 });
 
 module.exports = mongoose.model('Account', AccountSchema);
