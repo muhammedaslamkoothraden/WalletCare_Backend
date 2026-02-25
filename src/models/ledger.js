@@ -1,9 +1,5 @@
 const mongoose = require('mongoose');
 
-/**
- * Ledger Schema - The authoritative source of truth for WalletCare.
- * Every movement of money must result in a Ledger entry.
- */
 const LedgerSchema = new mongoose.Schema(
   {
     userId: {
@@ -18,34 +14,42 @@ const LedgerSchema = new mongoose.Schema(
       required: true,
       index: true
     },
-    // Using Decimal128 for absolute financial precision
     amount: {
       type: mongoose.Schema.Types.Decimal128,
       required: true
     },
     transactionType: {
       type: String,
-      enum: ['INCOME', 'EXPENSE', 'TRANSFER', 'GOAL_ALLOCATION', 'GOAL_DEALLOCATION'],
+      enum: ['INCOME', 'EXPENSE', 'TRANSFER'], 
       required: true,
       uppercase: true
     },
-    // CREDIT adds to balance, DEBIT subtracts, INTERNAL stays within the account
+    /**
+     * NORMAL: Standard income/expense (Yours to keep/spend)
+     * CREDIT: From a Creditor (You owe this back)
+     * DEBIT: To a Debtor (They owe you back)
+     * GOAL_ALLOCATION: Move Available -> Reserved
+     * GOAL_DEALLOCATION: Move Reserved -> Available
+     */
     direction: {
       type: String,
-      enum: ['CREDIT', 'DEBIT', 'INTERNAL'],
+      enum: ['NORMAL', 'CREDIT', 'DEBIT', 'GOAL_ALLOCATION', 'GOAL_DEALLOCATION'],
       required: true,
       uppercase: true
     },
-    // Crucial for Fintech: Prevents duplicate charges on network retries
     idempotencyKey: {
       type: String,
       required: true,
       trim: true
     },
+    partyName: {
+      type: String,
+      trim: true // Name of the Creditor/Debtor if applicable
+    },
     category: {
       type: String,
       required: true,
-      trim: true // e.g., 'Food', 'Salary', 'Rent'
+      trim: true 
     },
     description: {
       type: String,
@@ -64,11 +68,8 @@ const LedgerSchema = new mongoose.Schema(
   }
 );
 
-// --- INDEXES ---
-// 1. Unique constraint: A user cannot submit the same idempotency key twice.
+// Indexes for performance and safety
 LedgerSchema.index({ userId: 1, idempotencyKey: 1 }, { unique: true });
-
-// 2. Query optimization: For showing the user's transaction history.
 LedgerSchema.index({ accountId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Ledger', LedgerSchema);
