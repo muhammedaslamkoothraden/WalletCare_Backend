@@ -20,31 +20,42 @@ const LedgerSchema = new mongoose.Schema(
     },
     transactionType: {
       type: String,
-      // Added 'REVERSAL' to identify correction entries
-      enum: ['INCOME', 'EXPENSE', 'TRANSFER', 'REVERSAL'], 
+      // Added 'DEBT_MANAGEMENT' to separate loans/debts from standard Income/Expense
+      enum: ['INCOME', 'EXPENSE', 'TRANSFER', 'REVERSAL', 'DEBT_MANAGEMENT'], 
       required: true,
       uppercase: true
     },
     direction: {
       type: String,
-      // Added 'REVERSAL' to keep direction logic clean during audits
-      enum: ['NORMAL', 'CREDIT', 'DEBIT', 'GOAL_ALLOCATION', 'GOAL_DEALLOCATION', 'REVERSAL'],
+      /** * NORMAL: Standard Income/Expense
+       * CREDIT: Money from Creditor (Liability)
+       * DEBIT: Money to Debtor (Asset/Loan Out)
+       * GOAL_*: Internal Reservation logic
+       */
+      enum: [
+        'NORMAL', 
+        'CREDIT', 
+        'DEBIT', 
+        'GOAL_ALLOCATION', 
+        'GOAL_DEALLOCATION', 
+        'REVERSAL'
+      ],
       required: true,
       uppercase: true
     },
     idempotencyKey: {
       type: String,
       required: true,
+      unique: true, // Enforcement at DB level
       trim: true
     },
-    // NEW: Link back to the original transaction being reversed
     parentTransactionId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Ledger',
       default: null
     },
     partyName: {
-      type: String,
+      type: String, // e.g., "Bank of America" or "John Doe"
       trim: true 
     },
     category: {
@@ -58,7 +69,6 @@ const LedgerSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      // Added 'VOIDED' to mark the original transaction as cancelled
       enum: ['PENDING', 'COMPLETED', 'FAILED', 'VOIDED'],
       default: 'COMPLETED'
     }
@@ -70,10 +80,19 @@ const LedgerSchema = new mongoose.Schema(
   }
 );
 
-// Indexes
+// --- Strategic Indexing ---
+
+// 1. Prevent Double Processing (UserId + Key)
 LedgerSchema.index({ userId: 1, idempotencyKey: 1 }, { unique: true });
-LedgerSchema.index({ accountId: 1, createdAt: -1 });
-// Added index for parent lookups (useful for finding the reversal entry of an original tx)
+
+// 2. High-Performance Filtering (The "Advanced Filter" Index)
+// This covers filtering by Account, Direction, and Type for the history feed
+LedgerSchema.index({ accountId: 1, direction: 1, transactionType: 1, createdAt: -1 });
+
+// 3. Reversal Lookups (Sparse index ignores nulls to save space)
 LedgerSchema.index({ parentTransactionId: 1 }, { sparse: true });
+
+// 4. Global User History Keyset Pagination
+LedgerSchema.index({ userId: 1, _id: -1 });
 
 module.exports = mongoose.model('Ledger', LedgerSchema);
