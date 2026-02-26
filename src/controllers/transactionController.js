@@ -115,29 +115,51 @@ exports.addTransaction = async (req, res) => {
 
 /**
  * Paginated Transaction History (Keyset Pagination)
+ * Supports: Global User History OR Specific Account History
  */
 exports.getHistory = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { limit = 10, lastId } = req.query;
+    const { 
+      limit = 10, 
+      lastId, 
+      accountId // Optional: If provided, filters by specific account
+    } = req.query;
 
+    // 1. Build the dynamic query object
     const query = { userId };
-    if (lastId) {
-      query._id = { $lt: lastId }; // Fetch records older than this ID
+
+    // If accountId is provided in query params, filter by it
+    if (accountId) {
+      query.accountId = accountId;
     }
 
+    // Keyset pagination: Fetch records older than the last seen ID
+    if (lastId) {
+      query._id = { $lt: lastId }; 
+    }
+
+    // 2. Execute Query
     const history = await Ledger.find(query)
       .sort({ _id: -1 }) // Newest first
       .limit(parseInt(limit))
       .lean();
 
+    // 3. Determine if there are more pages
+    const nextCursor = history.length === parseInt(limit) 
+      ? history[history.length - 1]._id 
+      : null;
+
     res.status(200).json({
+      success: true,
       count: history.length,
-      nextCursor: history.length === parseInt(limit) ? history[history.length - 1]._id : null,
+      nextCursor,
       history
     });
+
   } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch history' });
+    console.error('HISTORY_FETCH_ERROR:', error);
+    res.status(500).json({ error: 'Failed to fetch transaction history' });
   }
 };
 /**
