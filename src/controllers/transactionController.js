@@ -1,103 +1,229 @@
 const mongoose = require('mongoose');
-const Ledger = require('../models/ledger'); // Renamed from transaction
-const Account = require('../models/Account'); // Renamed from wallet
+const Ledger = require('../models/Ledger');
+const Account = require('../models/Account');
 
 /**
- * Add a transaction (Ledger-based with Atomicity)
- * POST /api/transactions
+ * Atomic Transaction Handler
+ * Handles: Income, Expense, and Goal Allocations
  */
 exports.addTransaction = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const { userId, accountId, amount, transactionType, direction, category, description, idempotencyKey } = req.body;
+    const { 
+      userId, 
+      accountId, 
+      amount, 
+      transactionType, 
+      direction, 
+      category, 
+      description, 
+      idempotencyKey 
+    } = req.body;
 
-    // 1. Basic Validation
-    if (!userId || !accountId || !amount || !transactionType || !direction || !idempotencyKey) {
-      return res.status(400).json({ error: 'Missing required fields including idempotencyKey' });
+    // 1. Validation
+    if (!idempotencyKey) {
+      return res.status(400).json({ error: 'idempotencyKey is required for safety' });
     }
 
-    // 2. Check for Duplicate Request (Idempotency)
+    // 2. Idempotency Check (The Guard)
     const existingLedger = await Ledger.findOne({ userId, idempotencyKey }).session(session);
     if (existingLedger) {
       await session.abortTransaction();
-      return res.status(409).json({ message: 'Duplicate transaction detected', ledger: existingLedger });
+      return res.status(409).json({ 
+        message: 'Duplicate transaction detected', 
+        ledger: existingLedger 
+      });
     }
 
-    // 3. Fetch Account
+    // 3. Fetch & Lock Account
     const account = await Account.findOne({ _id: accountId, userId }).session(session);
     if (!account) {
       throw new Error('Account not found');
     }
 
-    // 4. Prepare Decimal values
-    const amountDecimal = mongoose.Types.Decimal128.fromString(amount.toString());
-    const currentAvailable = parseFloat(account.availableBalance.toString());
-    const transactionAmount = parseFloat(amount.toString());
+    // 4. Precision Math Check (Avoid Floating Point errors)
+    const amountVal = parseFloat(amount);
+    const availableVal = parseFloat(account.availableBalance.toString());
 
-    // 5. Insufficient Funds Check (For Debits/Expenses)
-    if (direction === 'DEBIT' && currentAvailable < transactionAmount) {
-      await session.abortTransaction();
-      return res.status(400).json({ error: 'Insufficient funds' });
+    // 5. Invariant Check (Prevent Negative Balance)
+    if (direction === 'DEBIT' || direction === 'GOAL_ALLOCATION') {
+      if (availableVal < amountVal) {
+        await session.abortTransaction();
+        return res.status(400).json({ error: 'Insufficient funds' });
+      }
     }
 
-    // 6. Create Ledger Entry
-    const ledger = new Ledger({
+    // 6. Execute Ledger Write
+    const [newLedger] = await Ledger.create([{
       userId,
       accountId,
-      amount: amountDecimal,
+      amount: mongoose.Types.Decimal128.fromString(amount.toString()),
       transactionType,
       direction,
       category,
       description,
       idempotencyKey,
       status: 'COMPLETED'
-    });
+    }], { session });
 
-    // 7. Update Materialized Balance in Account
-    // The account.pre('save') hook will automatically update totalBalance
+    // 7. Atomic Materialized Balance Update
+    let updateFields = {};
     if (direction === 'CREDIT') {
-      account.availableBalance = mongoose.Types.Decimal128.fromString((currentAvailable + transactionAmount).toFixed(2));
+      // Income: Increase Available
+      updateFields = { $inc: { availableBalance: amountVal } };
     } else if (direction === 'DEBIT') {
-      account.availableBalance = mongoose.Types.Decimal128.fromString((currentAvailable - transactionAmount).toFixed(2));
+      // Expense: Decrease Available
+      updateFields = { $inc: { availableBalance: -amountVal } };
+    } else if (direction === 'GOAL_ALLOCATION') {
+      // Move Available -> Reserved
+      updateFields = { $inc: { availableBalance: -amountVal, reservedBalance: amountVal } };
+    } else if (direction === 'GOAL_DEALLOCATION') {
+      // Move Reserved -> Available
+      updateFields = { $inc: { availableBalance: amountVal, reservedBalance: -amountVal } };
     }
-    // Note: 'INTERNAL' transfers (goals) don't change totalBalance, just move available -> reserved
 
-    // 8. Atomic Save
-    await ledger.save({ session });
-    await account.save({ session });
+    const updatedAccount = await Account.findOneAndUpdate(
+      { _id: accountId },
+      updateFields,
+      { session, new: true, runValidators: true }
+    );
+
+    // 8. Final Invariant Confirmation (Double Check)
+    if (parseFloat(updatedAccount.availableBalance.toString()) < 0) {
+      throw new Error('Critical: Transaction resulted in negative balance');
+    }
 
     await session.commitTransaction();
-    session.endSession();
-
+    
     res.status(201).json({
-      message: 'Transaction successful',
-      transactionId: ledger._id,
-      newBalance: account.availableBalance.toString()
+      success: true,
+      transactionId: newLedger._id,
+      availableBalance: updatedAccount.availableBalance.toString(),
+      totalBalance: updatedAccount.totalBalance.toString()
     });
 
   } catch (error) {
     await session.abortTransaction();
+    console.error('TRANSACTION_FAILURE:', error);
+    res.status(500).json({ error: error.message || 'Internal Server Error' });
+  } finally {
     session.endSession();
-    console.error('Transaction Error:', error);
-    res.status(500).json({ error: error.message || 'Internal server error' });
   }
 };
 
 /**
- * Get History
+ * Paginated Transaction History (Keyset Pagination)
  */
 exports.getHistory = async (req, res) => {
   try {
     const { userId } = req.params;
-    const history = await Ledger.find({ userId }).sort({ createdAt: -1 });
+    const { limit = 10, lastId } = req.query;
+
+    const query = { userId };
+    if (lastId) {
+      query._id = { $lt: lastId }; // Fetch records older than this ID
+    }
+
+    const history = await Ledger.find(query)
+      .sort({ _id: -1 }) // Newest first
+      .limit(parseInt(limit))
+      .lean();
 
     res.status(200).json({
       count: history.length,
+      nextCursor: history.length === parseInt(limit) ? history[history.length - 1]._id : null,
       history
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch history' });
+  }
+};
+/**
+ * @description Reverses a transaction by creating a counter-entry.
+ * Handles Week 10 requirements: Balance reversal with safety checks.
+ */
+exports.reverseTransaction = async (req, res) => {
+  const { ledgerId } = req.params;
+  const { userId, reason } = req.body;
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    // 1. Fetch the original transaction
+    const originalEntry = await Ledger.findOne({ _id: ledgerId, userId }).session(session);
+    
+    if (!originalEntry) {
+      return res.status(404).json({ error: "Original transaction not found." });
+    }
+
+    if (originalEntry.status === 'VOIDED') {
+      return res.status(400).json({ error: "Transaction is already reversed." });
+    }
+
+    // 2. Determine the Reversal Impact
+    // If original was a DEBIT (money out), we need to CREDIT (money in).
+    const isOriginalDebit = originalEntry.direction === 'DEBIT' || originalEntry.direction === 'GOAL_ALLOCATION';
+    const reversalDirection = isOriginalDebit ? 'CREDIT' : 'DEBIT';
+    const amountVal = parseFloat(originalEntry.amount.toString());
+
+    // 3. Safety Check: If we are reversing an INCOME (CREDIT), 
+    // we must ensure the user still has enough balance to take that money back.
+    if (reversalDirection === 'DEBIT') {
+      const account = await Account.findById(originalEntry.accountId).session(session);
+      const available = parseFloat(account.availableBalance.toString());
+      
+      if (available < amountVal) {
+        throw new Error("Reversal denied: Insufficient funds to claw back this transaction.");
+      }
+    }
+
+    // 4. Create the Reversal Ledger Entry (The Audit Trail)
+    const [reversalLedger] = await Ledger.create([{
+      userId: originalEntry.userId,
+      accountId: originalEntry.accountId,
+      amount: originalEntry.amount, // Same amount
+      direction: reversalDirection,
+      transactionType: originalEntry.transactionType,
+      category: "Reversal",
+      description: `Reversal of tx: ${ledgerId}. Reason: ${reason || 'User requested'}`,
+      idempotencyKey: `rev-${ledgerId}`, // Derived key to prevent double reversal
+      status: 'COMPLETED'
+    }], { session });
+
+    // 5. Update Materialized Balance
+    // We use $inc to reverse the original direction
+    const incAmount = reversalDirection === 'CREDIT' ? amountVal : -amountVal;
+    
+    // Note: If reversing a GOAL_ALLOCATION, we move from Reserved -> Available
+    let updateQuery = { $inc: { availableBalance: incAmount } };
+    if (originalEntry.direction === 'GOAL_ALLOCATION') {
+      updateQuery.$inc.reservedBalance = -amountVal;
+    }
+
+    const updatedAccount = await Account.findOneAndUpdate(
+      { _id: originalEntry.accountId },
+      updateQuery,
+      { session, new: true }
+    );
+
+    // 6. Mark the original entry as VOIDED
+    originalEntry.status = 'VOIDED';
+    await originalEntry.save({ session });
+
+    await session.commitTransaction();
+
+    res.status(200).json({
+      message: "Transaction successfully reversed.",
+      reversalId: reversalLedger._id,
+      newBalance: updatedAccount.availableBalance.toString()
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    res.status(400).json({ error: error.message });
+  } finally {
+    session.endSession();
   }
 };

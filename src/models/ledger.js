@@ -20,20 +20,15 @@ const LedgerSchema = new mongoose.Schema(
     },
     transactionType: {
       type: String,
-      enum: ['INCOME', 'EXPENSE', 'TRANSFER'], 
+      // Added 'REVERSAL' to identify correction entries
+      enum: ['INCOME', 'EXPENSE', 'TRANSFER', 'REVERSAL'], 
       required: true,
       uppercase: true
     },
-    /**
-     * NORMAL: Standard income/expense (Yours to keep/spend)
-     * CREDIT: From a Creditor (You owe this back)
-     * DEBIT: To a Debtor (They owe you back)
-     * GOAL_ALLOCATION: Move Available -> Reserved
-     * GOAL_DEALLOCATION: Move Reserved -> Available
-     */
     direction: {
       type: String,
-      enum: ['NORMAL', 'CREDIT', 'DEBIT', 'GOAL_ALLOCATION', 'GOAL_DEALLOCATION'],
+      // Added 'REVERSAL' to keep direction logic clean during audits
+      enum: ['NORMAL', 'CREDIT', 'DEBIT', 'GOAL_ALLOCATION', 'GOAL_DEALLOCATION', 'REVERSAL'],
       required: true,
       uppercase: true
     },
@@ -42,9 +37,15 @@ const LedgerSchema = new mongoose.Schema(
       required: true,
       trim: true
     },
+    // NEW: Link back to the original transaction being reversed
+    parentTransactionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Ledger',
+      default: null
+    },
     partyName: {
       type: String,
-      trim: true // Name of the Creditor/Debtor if applicable
+      trim: true 
     },
     category: {
       type: String,
@@ -57,7 +58,8 @@ const LedgerSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['PENDING', 'COMPLETED', 'FAILED'],
+      // Added 'VOIDED' to mark the original transaction as cancelled
+      enum: ['PENDING', 'COMPLETED', 'FAILED', 'VOIDED'],
       default: 'COMPLETED'
     }
   },
@@ -68,8 +70,10 @@ const LedgerSchema = new mongoose.Schema(
   }
 );
 
-// Indexes for performance and safety
+// Indexes
 LedgerSchema.index({ userId: 1, idempotencyKey: 1 }, { unique: true });
 LedgerSchema.index({ accountId: 1, createdAt: -1 });
+// Added index for parent lookups (useful for finding the reversal entry of an original tx)
+LedgerSchema.index({ parentTransactionId: 1 }, { sparse: true });
 
 module.exports = mongoose.model('Ledger', LedgerSchema);
