@@ -21,7 +21,7 @@ const AccountSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ['CASH', 'BANK', 'SAVINGS'], 
+      enum: ['CASH', 'BANK',], 
       required: true,
       uppercase: true
     },
