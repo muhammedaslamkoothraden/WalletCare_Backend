@@ -21,7 +21,7 @@ const AccountSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ['CASH', 'BANK', 'SAVINGS'], 
+      enum: ['CASH', 'BANK', 'SAVINGS'],
       required: true,
       uppercase: true
     },
@@ -49,14 +49,14 @@ const AccountSchema = new mongoose.Schema(
     },
     isDefault: {
       type: Boolean,
-      default: false 
+      default: false
     },
     isActive: {
       type: Boolean,
       default: true
     }
   },
-  { 
+  {
     timestamps: true,
     optimisticConcurrency: true, // Prevents race conditions during updates
     toJSON: { getters: true },
@@ -70,7 +70,7 @@ AccountSchema.index({ userId: 1, name: 1 }, { unique: true });
 
 // --- VIRTUALS ---
 // Useful for the Flutter frontend to get a simple string/number
-AccountSchema.virtual('formattedTotal').get(function() {
+AccountSchema.virtual('formattedTotal').get(function () {
   return this.totalBalance ? this.totalBalance.toString() : "0.00";
 });
 
@@ -79,20 +79,23 @@ AccountSchema.virtual('formattedTotal').get(function() {
  * Invariant: totalBalance MUST ALWAYS equal availableBalance + reservedBalance.
  * This runs before every .save() call to prevent "Balance Drift".
  */
-AccountSchema.pre('save', function(next) {
-  try {
-    const avail = parseFloat(this.availableBalance.toString() || "0");
-    const res = parseFloat(this.reservedBalance.toString() || "0");
-    
-    // Automatically set totalBalance
-    this.totalBalance = mongoose.Types.Decimal128.fromString((avail + res).toFixed(2));
-    
-    // Successfully move to the next middleware or save operation
-    // next();
-  } catch (error) {
-    // If math fails, pass the error to the next step to stop the save
-    next(error);
+
+// Note: We use parseFloat to convert Decimal128 to a number for the math,
+AccountSchema.pre("save", function () {
+  const avail = parseFloat(this.availableBalance?.toString() || "0");
+  const res = parseFloat(this.reservedBalance?.toString() || "0");
+
+  if (avail < 0) {
+    throw new Error("Available balance cannot be negative");
   }
+
+  if (res < 0) {
+    throw new Error("Reserved balance cannot be negative");
+  }
+
+  this.totalBalance = mongoose.Types.Decimal128.fromString(
+    (avail + res).toFixed(2)
+  );
 });
 
-module.exports = mongoose.model('Account', AccountSchema);
+module.exports = mongoose.model("Account", AccountSchema);

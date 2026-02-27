@@ -7,17 +7,19 @@ const goalSchema = new mongoose.Schema(
       ref: "User",
       required: true
     },
+
     title: {
       type: String,
       required: true,
       trim: true,
     },
-    accountType: {
-      type: String,
-      required: true,
-      enum: ["wallet", "bank", "cash", "savings"],
-      
+
+    accountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Account",
+      required: true
     },
+
     category: {
       type: String,
       required: true,
@@ -30,20 +32,24 @@ const goalSchema = new mongoose.Schema(
         "Other"
       ]
     },
+
     targetAmount: {
       type: Number,
       required: true,
       min: 1,
     },
+
     currentAmount: {
       type: Number,
       default: 0,
       min: 0
     },
+
     targetDate: {
       type: Date,
       required: true,
     },
+
     status: {
       type: String,
       enum: ["active", "completed"],
@@ -53,4 +59,4 @@ const goalSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-module.exports = mongoose.model("Goal", goalSchema);
+module.exports = mongoose.models.Goal || mongoose.model("Goal", goalSchema);

@@ -1,18 +1,18 @@
-const Goal = require("../models/Goal");
+const mongoose = require('mongoose');
+const Account = require("../models/Account");
+const Ledger = require('../models/ledger');
 const {
   calculateGoalDetails,
   calculateSummary
 } = require("../services/goal.service");
-const Wallet = require("../models/wallet");
-const { processGoalDeposit } = require("../services/goal.service");
-
-
+const Goal = require('../models/Goal');
 // CREATE GOAL
 exports.createGoal = async (req, res) => {
   try {
-    const { title, category, targetAmount, targetDate, accountType } = req.body;
+    const { title, category, targetAmount, targetDate, accountId } = req.body;
 
-    if (!title || !category || !targetAmount || !targetDate || !accountType) {
+    // 1️⃣ Validate required fields
+    if (!title || !category || !targetAmount || !targetDate || !accountId) {
       return res.status(400).json({
         success: false,
         message: "All fields are required"
@@ -26,12 +26,26 @@ exports.createGoal = async (req, res) => {
       });
     }
 
+    // 2️⃣ Check account exists & belongs to user
+    const account = await Account.findOne({
+      _id: accountId,
+      userId: req.user.id
+    });
+
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        message: "Account not found or not authorized"
+      });
+    }
+
+    // 3️⃣ Create goal
     const goal = await Goal.create({
       userId: req.user.id,
+      accountId,
       title,
       category,
       targetAmount,
-      accountType,
       targetDate
     });
 
@@ -76,11 +90,16 @@ exports.getGoals = async (req, res) => {
 
 
 
+
 // UPDATE GOAL
 exports.updateGoal = async (req, res) => {
   try {
 
     const goal = await Goal.findById(req.params.id);
+
+    if (goal.currentAmount + amount > goal.targetAmount) {
+      throw new Error("Deposit exceeds target amount");
+    }
 
     if (!goal) {
       return res.status(404).json({
@@ -121,7 +140,35 @@ exports.updateGoal = async (req, res) => {
     if (req.body.category) goal.category = req.body.category;
     if (req.body.targetAmount) goal.targetAmount = req.body.targetAmount;
     if (req.body.targetDate) goal.targetDate = req.body.targetDate;
-    if (req.body.currentAmount >= 0) goal.currentAmount = req.body.currentAmount;
+    if (req.body.targetAmount && req.body.targetAmount < goal.currentAmount) {
+      return res.status(400).json({
+        success: false,
+        message: "Target amount cannot be less than current saved amount"
+      });
+    }
+
+    // Handle account change
+    if (req.body.accountId) {
+
+      if (goal.currentAmount > 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot change account while goal has reserved money"
+        });
+      }
+
+      // Optional: verify account belongs to user
+      const newAccount = await Account.findById(req.body.accountId);
+
+      if (!newAccount || newAccount.userId.toString() !== req.user.id.toString()) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid account"
+        });
+      }
+
+      goal.accountId = req.body.accountId;
+    }
 
     // AUTO COMPLETION
     if (goal.currentAmount >= goal.targetAmount) {
@@ -217,6 +264,9 @@ exports.deleteGoal = async (req, res) => {
 
 // DEPOSIT TO GOAL
 exports.depositToGoal = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { amount } = req.body;
 
@@ -227,50 +277,170 @@ exports.depositToGoal = async (req, res) => {
       });
     }
 
-    const goal = await Goal.findById(req.params.id);
+    const goal = await Goal.findById(req.params.id).session(session);
 
     if (!goal) {
-      return res.status(404).json({
-        success: false,
-        message: "Goal not found"
-      });
+      throw new Error("Goal not found");
     }
 
     if (goal.userId.toString() !== req.user.id.toString()) {
-      return res.status(403).json({
-        success: false,
-        message: "Not authorized"
-      });
+      throw new Error("Not authorized");
     }
 
     if (goal.status === "completed") {
-      return res.status(400).json({
-        success: false,
-        message: "Goal already completed"
-      });
+      throw new Error("Goal already completed");
     }
 
-    const wallet = await Wallet.findOne({
-      userId: req.user.id
-    });
+    console.log("Type of Account:", typeof Account);
+    console.log("Account keys:", Object.keys(Account));
 
-    if (!wallet) {
-      return res.status(404).json({
-        success: false,
-        message: "Wallet not found"
-      });
+    // ✅ FIND ACCOUNT (NOT WALLET)
+    const account = await Account.findById(goal.accountId).session(session);
+
+    if (!account) {
+      throw new Error("Account not found");
     }
 
-    const updatedGoal = await processGoalDeposit(goal, wallet, amount);
+    const available = parseFloat(account.availableBalance.toString());
+
+    if (available < amount) {
+      throw new Error("Insufficient balance");
+    }
+
+    // ✅ MOVE MONEY: Available -> Reserved
+    account.availableBalance = mongoose.Types.Decimal128.fromString(
+      (available - amount).toFixed(2)
+    );
+
+    account.reservedBalance = mongoose.Types.Decimal128.fromString(
+      (
+        parseFloat(account.reservedBalance.toString()) + amount
+      ).toFixed(2)
+    );
+    if (goal.currentAmount + amount > goal.targetAmount) {
+      throw new Error("Deposit exceeds goal target");
+    }
+
+    await account.save({ session });
+
+    // ✅ UPDATE GOAL
+    goal.currentAmount += amount;
+
+    if (goal.currentAmount >= goal.targetAmount) {
+      goal.status = "completed";
+    }
+
+    await goal.save({ session });
+
+    // ✅ CREATE LEDGER ENTRY
+    await Ledger.create([{
+      userId: req.user.id,
+      accountId: account._id,
+      amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)),
+      transactionType: "TRANSFER",
+      direction: "GOAL_ALLOCATION",
+      category: "Goal",
+      description: `Deposit to goal: ${goal.title}`,
+      idempotencyKey: new mongoose.Types.ObjectId().toString()
+    }], { session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     res.status(200).json({
       success: true,
       message: "Amount deposited successfully",
-      data: updatedGoal
+      data: goal
     });
 
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+
     res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+// WITHDRAW FROM GOAL
+exports.withdrawFromGoal = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { amount } = req.body;
+
+    if (!amount || amount <= 0) {
+      throw new Error("Invalid withdrawal amount");
+    }
+
+    const goal = await Goal.findById(req.params.id).session(session);
+    if (!goal) throw new Error("Goal not found");
+
+    if (goal.userId.toString() !== req.user.id.toString()) {
+      throw new Error("Not authorized");
+    }
+
+    if (goal.currentAmount < amount) {
+      throw new Error("Insufficient goal balance");
+    }
+
+    const account = await Account.findById(goal.accountId).session(session);
+    if (!account) throw new Error("Account not found");
+
+    // ✅ Convert Decimal128 safely
+    const available = parseFloat(account.availableBalance.toString());
+    const reserved = parseFloat(account.reservedBalance.toString());
+
+    if (reserved < amount) {
+      throw new Error("Insufficient reserved balance");
+    }
+
+    // ✅ Move money: Reserved ➜ Available
+    account.reservedBalance = mongoose.Types.Decimal128.fromString(
+      (reserved - amount).toFixed(2)
+    );
+
+    account.availableBalance = mongoose.Types.Decimal128.fromString(
+      (available + amount).toFixed(2)
+    );
+
+    // ✅ Update goal
+    goal.currentAmount -= amount;
+
+    if (goal.currentAmount < goal.targetAmount) {
+      goal.status = "active";
+    }
+
+    await account.save({ session });
+    await goal.save({ session });
+
+    // ✅ Ledger entry
+    await Ledger.create([{
+      userId: req.user.id,
+      accountId: account._id,
+      amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)),
+      transactionType: "TRANSFER",
+      direction: "GOAL_DEALLOCATION",
+      category: "Goal",
+      description: `Withdraw from goal: ${goal.title}`,
+      idempotencyKey: new mongoose.Types.ObjectId().toString()
+    }], { session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(200).json({
+      success: true,
+      message: "Withdrawn from goal successfully"
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+
+    res.status(400).json({
       success: false,
       message: error.message
     });

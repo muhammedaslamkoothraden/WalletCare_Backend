@@ -1,62 +1,31 @@
 const calculateGoalDetails = (goals) => {
   const today = new Date();
 
-  return goals.map(goal => {
+  return goals.map((goal) => {
+    const targetAmount = Number(goal.targetAmount) || 0;
+    const currentAmount = Number(goal.currentAmount) || 0;
 
-    const percentage = goal.targetAmount > 0
-      ? Math.min(
-        (goal.currentAmount / goal.targetAmount) * 100,
-        100
-      )
-      : 0;
+    // Prevent division by zero
+    const progressPercentage =
+      targetAmount > 0
+        ? Math.min((currentAmount / targetAmount) * 100, 100)
+        : 0;
 
-    const overdue =
+    const remainingAmount = Math.max(targetAmount - currentAmount, 0);
+
+    const isOverdue =
       goal.status !== "completed" &&
+      goal.targetDate &&
       today > new Date(goal.targetDate);
 
     return {
       ...goal.toObject(),
-      percentage: Number(percentage.toFixed(2)),
-      overdue
+
+      progressPercentage: Number(progressPercentage.toFixed(2)),
+      remainingAmount,
+      isOverdue
     };
   });
-};
-
-const processGoalDeposit = async (goal, wallet, amount) => {
-
-  if (wallet.balance < amount) {
-    throw new Error("Insufficient wallet balance");
-  }
-
-  // 1️⃣ Deduct from wallet
-  wallet.balance -= amount;
-
-  // 2️⃣ Add to savings
-  wallet.savingsBalance += amount;
-
-  // 3️⃣ Add to goal
-  goal.currentAmount += amount;
-
-  // 4️⃣ Complete if reached
-  if (goal.currentAmount >= goal.targetAmount) {
-    goal.status = "completed";
-  }
-
-  await wallet.save();
-  await goal.save();
-
-  const Transaction = require("../models/transaction");
-
-  await Transaction.create({
-    userId: wallet.userId,
-    walletId: wallet._id,
-    amount: amount,
-    type: "expense",
-    category: "Goal Deposit",
-    description: `Deposit to goal: ${goal.title}`
-  });
-
-  return goal;
 };
 
 const calculateSummary = (goals) => {
@@ -72,7 +41,7 @@ const calculateSummary = (goals) => {
   const totalTargetAmount =
     goals.reduce((sum, g) => sum + g.targetAmount, 0);
 
-  const totalSavedAmount =
+  const totalReservedAmount =
     goals.reduce((sum, g) => sum + g.currentAmount, 0);
 
   return {
@@ -80,14 +49,13 @@ const calculateSummary = (goals) => {
     activeGoals,
     completedGoals,
     totalTargetAmount,
-    totalSavedAmount
+    totalReservedAmount
   };
 };
 
 module.exports = {
   calculateGoalDetails,
-  calculateSummary,
-  processGoalDeposit
+  calculateSummary
 };
 
 
