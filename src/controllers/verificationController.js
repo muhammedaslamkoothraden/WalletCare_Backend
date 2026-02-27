@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 const { User, PendingUser } = require("../models/user");
-const { initializeWalletForUser } = require("../services/wallet.service");
+const { initializeAccountForUser } = require("../services/Account.service");
 const { verifyOtp, resendOtp, createOtp } = require("../services/otp.service");
 
 exports.verifyEmailOtp = async (req, res) => {
@@ -40,8 +40,8 @@ exports.verifyEmailOtp = async (req, res) => {
     newUser.$ignoreHooks = true; // skip pre-save hash — password already hashed
     await newUser.save({ session });
 
-    await initializeWalletForUser(newUser._id, session);
-
+    await initializeAccountForUser(newUser._id, session);
+    
     await PendingUser.deleteOne({ _id: pendingUser._id }).session(session);
 
     await session.commitTransaction();
