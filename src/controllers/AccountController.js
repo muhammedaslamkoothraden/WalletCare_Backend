@@ -4,11 +4,12 @@ const Account = require('../models/Account');
 
 /**
  * @description Retrieves balances and calculates global net worth.
+ * Supports filtering by ?type=CASH or ?type=BANK
  */
 exports.getAccountBalances = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { accountId } = req.query;
+    const { accountId, type } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(userId)) {
       return res.status(400).json({ error: 'Valid UserId is required' });
@@ -16,10 +17,8 @@ exports.getAccountBalances = async (req, res) => {
 
     const query = { userId, status: { $in: ['ACTIVE', 'FROZEN'] } };
     if (accountId) query._id = accountId;
+    if (type && type.toUpperCase() !== 'ALL') query.type = type.toUpperCase();
 
-    // FIX 1: REMOVED .lean()
-    // Virtuals (like totalBalance) do NOT work with .lean() by default. 
-    // We need the full Mongoose documents to trigger the Virtual getter.
     const accounts = await Account.find(query);
 
     if (!accounts || accounts.length === 0) {
@@ -30,30 +29,38 @@ exports.getAccountBalances = async (req, res) => {
       });
     }
 
-    // FIX 2: Using the Virtual 'totalBalance'
+    // 🛡️ THE FIX IS HERE: Bulletproof Parsing
     const formattedAccounts = accounts.map(acc => {
+      // Safely grab the balances, default to "0" if missing in DB
+      const availableStr = acc.availableBalance ? acc.availableBalance.toString() : "0";
+      const reservedStr = acc.reservedBalance ? acc.reservedBalance.toString() : "0";
+      
+      // Calculate total safely just in case the Mongoose Virtual is missing
+      const fallbackTotal = new Decimal(availableStr).plus(new Decimal(reservedStr)).toString();
+
       return {
         id: acc._id,
         name: acc.name,
         type: acc.type,
-        currency: acc.currency,
-        available: acc.availableBalance.toString(),
-        reserved: acc.reservedBalance.toString(),
-        // This now calls your new Virtual in Account.js
-        total: acc.totalBalance, 
+        currency: acc.currency || 'INR',
+        available: availableStr,
+        reserved: reservedStr,
+        // Use Virtual if it exists, otherwise use our safe calculation
+        total: acc.totalBalance ? acc.totalBalance.toString() : fallbackTotal, 
         isDefault: acc.isDefault,
         status: acc.status
       };
     });
 
+    // Calculate Summary using the safely mapped strings
     let totalAvailable = new Decimal(0);
     let totalReserved = new Decimal(0);
     let netWorth = new Decimal(0);
 
     formattedAccounts.forEach(acc => {
-      totalAvailable = totalAvailable.plus(acc.available);
-      totalReserved = totalReserved.plus(acc.reserved);
-      netWorth = netWorth.plus(acc.total);
+      totalAvailable = totalAvailable.plus(new Decimal(acc.available));
+      totalReserved = totalReserved.plus(new Decimal(acc.reserved));
+      netWorth = netWorth.plus(new Decimal(acc.total));
     });
 
     return res.status(200).json({
@@ -68,8 +75,9 @@ exports.getAccountBalances = async (req, res) => {
     });
 
   } catch (error) {
+    // If it crashes now, you will see exactly why in your Node.js terminal
     console.error('FETCH_BALANCES_ERROR:', error);
-    return res.status(500).json({ error: 'Internal Server Error' });
+    return res.status(500).json({ error: 'Internal Server Error', details: error.message });
   }
 };
 
@@ -113,7 +121,6 @@ exports.createAccount = async (req, res) => {
         isDefault: newAccount.isDefault,
         status: newAccount.status,
         availableBalance: newAccount.availableBalance.toString(),
-        // Including totalBalance via the Virtual
         totalBalance: newAccount.totalBalance 
       }
     });
