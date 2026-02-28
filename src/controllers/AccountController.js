@@ -2,10 +2,6 @@ const mongoose = require('mongoose');
 const Decimal = require('decimal.js'); 
 const Account = require('../models/Account');
 
-/**
- * @description Retrieves balances and calculates global net worth.
- * Supports filtering by ?type=CASH or ?type=BANK
- */
 exports.getAccountBalances = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -15,12 +11,15 @@ exports.getAccountBalances = async (req, res) => {
       return res.status(400).json({ error: 'Valid UserId is required' });
     }
 
+    // FIX: Prevent Mongoose CastError if frontend sends a bad accountId
+    if (accountId && !mongoose.Types.ObjectId.isValid(accountId)) {
+      return res.status(400).json({ error: 'Invalid AccountId format' });
+    }
+
     const query = { userId, status: { $in: ['ACTIVE', 'FROZEN'] } };
     
-    // Exact ID match if a specific account is requested
     if (accountId) query._id = accountId;
     
-    // Bulletproof Regex filtering for CASH or BANK
     if (type && type.toUpperCase() !== 'ALL') {
       const cleanType = type.trim();
       query.type = new RegExp(`^${cleanType}$`, 'i'); 
@@ -31,16 +30,15 @@ exports.getAccountBalances = async (req, res) => {
     if (!accounts || accounts.length === 0) {
       return res.status(200).json({ 
         success: true, 
-        accounts: [], 
+        accounts:[], 
         globalSummary: { totalAvailable: "0.00", totalReserved: "0.00", netWorth: "0.00" } 
       });
     }
 
-    // Safely format accounts for Flutter
     const formattedAccounts = accounts.map(acc => {
-      const availableStr = acc.availableBalance ? acc.availableBalance.toString() : "0";
-      const reservedStr = acc.reservedBalance ? acc.reservedBalance.toString() : "0";
-      const fallbackTotal = new Decimal(availableStr).plus(new Decimal(reservedStr)).toString();
+      const availableStr = acc.availableBalance ? acc.availableBalance.toString() : "0.00";
+      const reservedStr = acc.reservedBalance ? acc.reservedBalance.toString() : "0.00";
+      const fallbackTotal = new Decimal(availableStr).plus(new Decimal(reservedStr)).toFixed(2);
 
       return {
         id: acc._id,
@@ -55,7 +53,6 @@ exports.getAccountBalances = async (req, res) => {
       };
     });
 
-    // Calculate Summary using the safely mapped strings
     let totalAvailable = new Decimal(0);
     let totalReserved = new Decimal(0);
     let netWorth = new Decimal(0);
@@ -83,14 +80,11 @@ exports.getAccountBalances = async (req, res) => {
   }
 };
 
-/**
- * @description Creates a new account.
- */
 exports.createAccount = async (req, res) => {
   try {
     const { userId, name, type } = req.body;
-
     const allowedTypes = ['CASH', 'BANK'];
+    
     if (!type || !allowedTypes.includes(type.toUpperCase())) {
       return res.status(400).json({ error: 'Invalid type. Must be CASH or BANK' });
     }
@@ -120,8 +114,10 @@ exports.createAccount = async (req, res) => {
         type: newAccount.type,
         isDefault: newAccount.isDefault,
         status: newAccount.status,
-        availableBalance: newAccount.availableBalance.toString(),
-        totalBalance: newAccount.totalBalance 
+        // FIX: Match the exact mapping keys expected by the frontend AccountModel
+        available: newAccount.availableBalance.toString(),
+        reserved: newAccount.reservedBalance.toString(),
+        total: newAccount.totalBalance.toString()
       }
     });
 
