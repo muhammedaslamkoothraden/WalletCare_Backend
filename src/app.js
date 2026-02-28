@@ -4,7 +4,7 @@ require("dotenv").config();
 const cors = require("cors");
 const helmet = require("helmet");
 
-// const walletRoutes = require("./routes/wallet.routes");
+const AccountRoutes = require("./routes/Account.routes");
 const transactionRoutes = require("./routes/transaction.routes");
 const authRoutes = require("./routes/auth.routes");
 const goalRoutes = require("./routes/goal.routes");
@@ -20,7 +20,7 @@ app.use(express.json());
 
 // Routes
 app.use("/api/auth", authRoutes);
-// app.use("/api/wallet", walletRoutes);
+app.use("/api/account", AccountRoutes);
 app.use("/api/transaction", transactionRoutes);
 app.use("/api/goals", authMiddleware, goalRoutes);
 

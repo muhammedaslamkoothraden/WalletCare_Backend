@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const Account = require("../models/Account");
-const Ledger = require('../models/ledger');
+const Ledger = require('../models/Ledger');
 const {
   calculateGoalDetails,
   calculateSummary

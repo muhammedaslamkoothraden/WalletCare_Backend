@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const Decimal = require('decimal.js'); // Safely handles FinTech math
 
 /**
  * Account Schema for WalletCare
@@ -21,7 +22,7 @@ const AccountSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ['CASH', 'BANK', 'SAVINGS'],
+      enum: ['CASH', 'BANK'], 
       required: true,
       uppercase: true
     },
@@ -49,14 +50,16 @@ const AccountSchema = new mongoose.Schema(
     },
     isDefault: {
       type: Boolean,
-      default: false
+      default: false 
     },
-    isActive: {
-      type: Boolean,
-      default: true
+    // Upgraded from isActive to allow for frozen accounts (e.g., lost card)
+    status: { 
+      type: String,
+      enum: ['ACTIVE', 'FROZEN', 'CLOSED'],
+      default: 'ACTIVE'
     }
   },
-  {
+  { 
     timestamps: true,
     optimisticConcurrency: true, // Prevents race conditions during updates
     toJSON: { getters: true },
@@ -70,7 +73,7 @@ AccountSchema.index({ userId: 1, name: 1 }, { unique: true });
 
 // --- VIRTUALS ---
 // Useful for the Flutter frontend to get a simple string/number
-AccountSchema.virtual('formattedTotal').get(function () {
+AccountSchema.virtual('formattedTotal').get(function() {
   return this.totalBalance ? this.totalBalance.toString() : "0.00";
 });
 
@@ -79,23 +82,24 @@ AccountSchema.virtual('formattedTotal').get(function () {
  * Invariant: totalBalance MUST ALWAYS equal availableBalance + reservedBalance.
  * This runs before every .save() call to prevent "Balance Drift".
  */
-
-// Note: We use parseFloat to convert Decimal128 to a number for the math,
-AccountSchema.pre("save", function () {
-  const avail = parseFloat(this.availableBalance?.toString() || "0");
-  const res = parseFloat(this.reservedBalance?.toString() || "0");
-
-  if (avail < 0) {
-    throw new Error("Available balance cannot be negative");
+AccountSchema.pre('save', function(next) {
+  try {
+    // FIX: Using decimal.js instead of native parseFloat
+    const avail = new Decimal(this.availableBalance.toString() || "0");
+    const res = new Decimal(this.reservedBalance.toString() || "0");
+    
+    // Safely calculate the total
+    const total = avail.plus(res);
+    
+    // Automatically set totalBalance back to Decimal128 format
+    this.totalBalance = mongoose.Types.Decimal128.fromString(total.toFixed(2));
+    
+    // Successfully move to the next middleware or save operation
+    next();
+  } catch (error) {
+    // If math fails, pass the error to the next step to stop the save
+    next(error);
   }
-
-  if (res < 0) {
-    throw new Error("Reserved balance cannot be negative");
-  }
-
-  this.totalBalance = mongoose.Types.Decimal128.fromString(
-    (avail + res).toFixed(2)
-  );
 });
 
-module.exports = mongoose.model("Account", AccountSchema);
+module.exports = mongoose.model('Account', AccountSchema);
