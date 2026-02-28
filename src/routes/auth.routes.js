@@ -1,8 +1,8 @@
 const express = require("express");
 const router = express.Router();
 
-const { registerUser, loginUser } = require("../controllers/auth.controller");
-const { verifyEmailOtp, resendEmailOtp } = require("../controllers/verificationController");
+const { registerUser, loginUser, resendEmailOtp } = require("../controllers/auth.controller");
+const { verifyEmailOtp } = require("../controllers/verificationController");
 
 router.post("/register", registerUser);
 router.post("/verify-otp", verifyEmailOtp);

@@ -2,7 +2,7 @@ const { User, PendingUser } = require("../models/user");
 const { createOtp, resendOtp } = require("../services/otp.service");
 const bcrypt = require("bcryptjs");
 
-//Register
+// Register
 exports.registerUser = async (req, res) => {
   try {
     const { name, email, password, phone } = req.body;
@@ -26,7 +26,7 @@ exports.registerUser = async (req, res) => {
     const existingPending = await PendingUser.findOne({ email: normalizedEmail });
 
     if (existingPending) {
-      // Always update pending record with latest submitted data
+      // Update pending record with latest submitted data before resending
       const hashedPassword = await bcrypt.hash(password, 10);
       await PendingUser.findOneAndUpdate(
         { email: normalizedEmail },
@@ -39,7 +39,7 @@ exports.registerUser = async (req, res) => {
         return res.status(200).json({ message: "A verification OTP has been sent to your email" });
 
       } catch (resendError) {
-        // OTP expired — create fresh lifecycle with already updated pending record
+        // OTP deleted (expired or max attempts) — start fresh lifecycle
         if (resendError.message === "OTP_EXPIRED") {
           await createOtp(normalizedEmail, "signup");
           return res.status(200).json({ message: "A verification OTP has been sent to your email" });
@@ -57,7 +57,7 @@ exports.registerUser = async (req, res) => {
       }
     }
 
-    // Fresh registration
+    // No existing record — create pending user and send OTP
     const hashedPassword = await bcrypt.hash(password, 10);
 
     await PendingUser.create({
@@ -78,7 +78,7 @@ exports.registerUser = async (req, res) => {
   }
 };
 
-//Login
+// Login
 exports.loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -113,5 +113,56 @@ exports.loginUser = async (req, res) => {
   } catch (error) {
     console.error("loginUser error:", error.message);
     return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Resend OTP
+exports.resendEmailOtp = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const pendingUser = await PendingUser.findOne({ email: normalizedEmail });
+    if (!pendingUser) {
+      // Generic response — never reveal whether email exists
+      return res.status(200).json({
+        message: "If a pending registration exists, a new OTP has been sent."
+      });
+    }
+
+    try {
+      await resendOtp(normalizedEmail, "signup");
+    } catch (resendError) {
+      if (resendError.message === "RESEND_LIMIT_REACHED") {
+        return res.status(429).json({
+          message: "Maximum resend attempts reached. Please wait until the OTP expires."
+        });
+      }
+
+      if (resendError.message === "COOLDOWN_ACTIVE") {
+        return res.status(429).json({
+          message: "Please wait 60 seconds before requesting another OTP."
+        });
+      }
+
+      // OTP no longer exists — create fresh OTP without resetting pending user
+      if (resendError.message === "OTP_EXPIRED") {
+        await createOtp(normalizedEmail, "signup");
+        return res.status(200).json({ message: "OTP resent successfully." });
+      }
+
+      throw resendError;
+    }
+
+    return res.status(200).json({ message: "OTP resent successfully." });
+
+  } catch (error) {
+    console.error("resendEmailOtp error:", error.message);
+    return res.status(500).json({ message: "Failed to resend OTP. Please try again." });
   }
 };

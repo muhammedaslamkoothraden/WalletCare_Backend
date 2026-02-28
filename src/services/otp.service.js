@@ -8,11 +8,16 @@ const COOLDOWN_MS = 60 * 1000;
 const MAX_RESEND = 5;
 const MAX_VERIFY_ATTEMPTS = 3;
 
-exports.createOtp = async (identifier, purpose = "signup") => {
-  const id = identifier.toLowerCase().trim();
-
+// shared OTP generator used by createOtp and resendOtp
+const generateOtp = async () => {
   const otp = crypto.randomInt(100000, 999999).toString();
   const otpHash = await bcrypt.hash(otp, 10);
+  return { otp, otpHash };
+};
+
+exports.createOtp = async (identifier, purpose = "signup") => {
+  const id = identifier.toLowerCase().trim();
+  const { otp, otpHash } = await generateOtp();
 
   // upsert — replaces existing OTP if one exists for this identifier + purpose
   await Otp.findOneAndUpdate(
@@ -47,8 +52,7 @@ exports.resendOtp = async (identifier, purpose = "signup") => {
 
   if (Date.now() - record.lastSentAt.getTime() < COOLDOWN_MS) throw new Error("COOLDOWN_ACTIVE");
 
-  const otp = crypto.randomInt(100000, 999999).toString();
-  const otpHash = await bcrypt.hash(otp, 10);
+  const { otp, otpHash } = await generateOtp();
 
   record.otpHash = otpHash;
   record.attempts = 0;
