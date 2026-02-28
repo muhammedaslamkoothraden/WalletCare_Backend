@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const Decimal = require('decimal.js'); // Safely handles FinTech math
 
 /**
  * Account Schema for WalletCare
@@ -21,7 +22,7 @@ const AccountSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ['CASH', 'BANK',], 
+      enum: ['CASH', 'BANK'], 
       required: true,
       uppercase: true
     },
@@ -51,9 +52,11 @@ const AccountSchema = new mongoose.Schema(
       type: Boolean,
       default: false 
     },
-    isActive: {
-      type: Boolean,
-      default: true
+    // Upgraded from isActive to allow for frozen accounts (e.g., lost card)
+    status: { 
+      type: String,
+      enum: ['ACTIVE', 'FROZEN', 'CLOSED'],
+      default: 'ACTIVE'
     }
   },
   { 
@@ -81,14 +84,18 @@ AccountSchema.virtual('formattedTotal').get(function() {
  */
 AccountSchema.pre('save', function(next) {
   try {
-    const avail = parseFloat(this.availableBalance.toString() || "0");
-    const res = parseFloat(this.reservedBalance.toString() || "0");
+    // FIX: Using decimal.js instead of native parseFloat
+    const avail = new Decimal(this.availableBalance.toString() || "0");
+    const res = new Decimal(this.reservedBalance.toString() || "0");
     
-    // Automatically set totalBalance
-    this.totalBalance = mongoose.Types.Decimal128.fromString((avail + res).toFixed(2));
+    // Safely calculate the total
+    const total = avail.plus(res);
+    
+    // Automatically set totalBalance back to Decimal128 format
+    this.totalBalance = mongoose.Types.Decimal128.fromString(total.toFixed(2));
     
     // Successfully move to the next middleware or save operation
-    // next();
+    next();
   } catch (error) {
     // If math fails, pass the error to the next step to stop the save
     next(error);

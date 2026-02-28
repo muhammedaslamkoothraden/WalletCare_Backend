@@ -46,7 +46,8 @@ const LedgerSchema = new mongoose.Schema(
     idempotencyKey: {
       type: String,
       required: true,
-      unique: true, // Enforcement at DB level
+      // FIX 1: Removed `unique: true` from here to prevent global database conflicts.
+      // Uniqueness is now safely handled by the compound index at the bottom.
       trim: true
     },
     parentTransactionId: {
@@ -83,6 +84,7 @@ const LedgerSchema = new mongoose.Schema(
 // --- Strategic Indexing ---
 
 // 1. Prevent Double Processing (UserId + Key)
+// This perfectly ensures a single user cannot reuse an idempotency key.
 LedgerSchema.index({ userId: 1, idempotencyKey: 1 }, { unique: true });
 
 // 2. High-Performance Filtering (The "Advanced Filter" Index)
@@ -94,5 +96,20 @@ LedgerSchema.index({ parentTransactionId: 1 }, { sparse: true });
 
 // 4. Global User History Keyset Pagination
 LedgerSchema.index({ userId: 1, _id: -1 });
+
+// --- FINTECH IMMUTABILITY GUARD ---
+/**
+ * FIX 2: In the financial world, once a ledger entry is written, it is permanent.
+ * This middleware prevents any rogue code from accidentally updating a transaction's amount or category.
+ */
+LedgerSchema.pre('save', function(next) {
+  if (!this.isNew && this.status === 'COMPLETED') {
+    // Only allow updates if we are explicitly changing the status to VOIDED
+    if (!this.isModified('status') || this.status !== 'VOIDED') {
+      return next(new Error('Strict FinTech Compliance: Cannot modify a completed ledger entry. Create a reversal instead.'));
+    }
+  }
+  next();
+});
 
 module.exports = mongoose.model('Ledger', LedgerSchema);
