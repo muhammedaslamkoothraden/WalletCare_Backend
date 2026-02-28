@@ -16,8 +16,15 @@ exports.getAccountBalances = async (req, res) => {
     }
 
     const query = { userId, status: { $in: ['ACTIVE', 'FROZEN'] } };
+    
+    // Exact ID match if a specific account is requested
     if (accountId) query._id = accountId;
-    if (type && type.toUpperCase() !== 'ALL') query.type = type.toUpperCase();
+    
+    // Bulletproof Regex filtering for CASH or BANK
+    if (type && type.toUpperCase() !== 'ALL') {
+      const cleanType = type.trim();
+      query.type = new RegExp(`^${cleanType}$`, 'i'); 
+    }
 
     const accounts = await Account.find(query);
 
@@ -29,13 +36,10 @@ exports.getAccountBalances = async (req, res) => {
       });
     }
 
-    // 🛡️ THE FIX IS HERE: Bulletproof Parsing
+    // Safely format accounts for Flutter
     const formattedAccounts = accounts.map(acc => {
-      // Safely grab the balances, default to "0" if missing in DB
       const availableStr = acc.availableBalance ? acc.availableBalance.toString() : "0";
       const reservedStr = acc.reservedBalance ? acc.reservedBalance.toString() : "0";
-      
-      // Calculate total safely just in case the Mongoose Virtual is missing
       const fallbackTotal = new Decimal(availableStr).plus(new Decimal(reservedStr)).toString();
 
       return {
@@ -45,7 +49,6 @@ exports.getAccountBalances = async (req, res) => {
         currency: acc.currency || 'INR',
         available: availableStr,
         reserved: reservedStr,
-        // Use Virtual if it exists, otherwise use our safe calculation
         total: acc.totalBalance ? acc.totalBalance.toString() : fallbackTotal, 
         isDefault: acc.isDefault,
         status: acc.status
@@ -75,7 +78,6 @@ exports.getAccountBalances = async (req, res) => {
     });
 
   } catch (error) {
-    // If it crashes now, you will see exactly why in your Node.js terminal
     console.error('FETCH_BALANCES_ERROR:', error);
     return res.status(500).json({ error: 'Internal Server Error', details: error.message });
   }
@@ -94,8 +96,6 @@ exports.createAccount = async (req, res) => {
     }
 
     const existingAccounts = await Account.countDocuments({ userId, status: { $ne: 'CLOSED' } });
-    
-    // Logic: First account is default, or any new CASH account becomes the default
     const isDefault = existingAccounts === 0 || type.toUpperCase() === 'CASH';
 
     if (isDefault) {
