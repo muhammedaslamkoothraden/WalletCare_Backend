@@ -1,10 +1,9 @@
 const mongoose = require('mongoose');
-const Decimal = require('decimal.js'); // Required for safe Net Worth math
+const Decimal = require('decimal.js'); 
 const Account = require('../models/Account');
 
 /**
- * @description Retrieves balances for all user accounts and calculates a global net worth.
- * Supports single account lookup via query param ?accountId=...
+ * @description Retrieves balances and calculates global net worth.
  */
 exports.getAccountBalances = async (req, res) => {
   try {
@@ -15,12 +14,13 @@ exports.getAccountBalances = async (req, res) => {
       return res.status(400).json({ error: 'Valid UserId is required' });
     }
 
-    // FIX 1: Use the updated 'status' enum instead of 'isActive'
-    // You might want to include FROZEN accounts in net worth, but definitely not CLOSED ones.
     const query = { userId, status: { $in: ['ACTIVE', 'FROZEN'] } };
     if (accountId) query._id = accountId;
 
-    const accounts = await Account.find(query).lean();
+    // FIX 1: REMOVED .lean()
+    // Virtuals (like totalBalance) do NOT work with .lean() by default. 
+    // We need the full Mongoose documents to trigger the Virtual getter.
+    const accounts = await Account.find(query);
 
     if (!accounts || accounts.length === 0) {
       return res.status(200).json({ 
@@ -30,7 +30,7 @@ exports.getAccountBalances = async (req, res) => {
       });
     }
 
-    // 3. Transform Data for Frontend
+    // FIX 2: Using the Virtual 'totalBalance'
     const formattedAccounts = accounts.map(acc => {
       return {
         id: acc._id,
@@ -39,13 +39,13 @@ exports.getAccountBalances = async (req, res) => {
         currency: acc.currency,
         available: acc.availableBalance.toString(),
         reserved: acc.reservedBalance.toString(),
-        total: acc.totalBalance.toString(),
+        // This now calls your new Virtual in Account.js
+        total: acc.totalBalance, 
         isDefault: acc.isDefault,
         status: acc.status
       };
     });
 
-    // FIX 2: Safely Calculate Global Summary using Decimal.js
     let totalAvailable = new Decimal(0);
     let totalReserved = new Decimal(0);
     let netWorth = new Decimal(0);
@@ -74,37 +74,32 @@ exports.getAccountBalances = async (req, res) => {
 };
 
 /**
- * @description Creates a new account. 
- * Enforces types: 'CASH' or 'BANK'.
- * All accounts start at 0.00. Use Ledger for opening balances.
+ * @description Creates a new account.
  */
 exports.createAccount = async (req, res) => {
   try {
-    // FIX 3: Removed initialBalance. Accounts must strictly start at zero.
     const { userId, name, type } = req.body;
 
-    // 1. Strict Type Validation
     const allowedTypes = ['CASH', 'BANK'];
-    if (!allowedTypes.includes(type.toUpperCase())) {
+    if (!type || !allowedTypes.includes(type.toUpperCase())) {
       return res.status(400).json({ error: 'Invalid type. Must be CASH or BANK' });
     }
 
-    // 2. Default Logic
     const existingAccounts = await Account.countDocuments({ userId, status: { $ne: 'CLOSED' } });
+    
+    // Logic: First account is default, or any new CASH account becomes the default
     const isDefault = existingAccounts === 0 || type.toUpperCase() === 'CASH';
 
-    // 3. If this is a new default, remove default status from previous accounts
     if (isDefault) {
       await Account.updateMany({ userId }, { isDefault: false });
     }
 
-    // 4. Create the Account (Schema defaults automatically handle the 0.00 balances)
     const newAccount = new Account({
       userId,
-      name: name || (type === 'CASH' ? 'Main Cash' : 'New Bank'),
+      name: name || (type.toUpperCase() === 'CASH' ? 'Main Cash' : 'New Bank'),
       type: type.toUpperCase(),
       isDefault: isDefault,
-      status: 'ACTIVE' // FIX 1: Updated to match schema
+      status: 'ACTIVE' 
     });
 
     await newAccount.save();
@@ -117,7 +112,9 @@ exports.createAccount = async (req, res) => {
         type: newAccount.type,
         isDefault: newAccount.isDefault,
         status: newAccount.status,
-        balance: newAccount.availableBalance.toString()
+        availableBalance: newAccount.availableBalance.toString(),
+        // Including totalBalance via the Virtual
+        totalBalance: newAccount.totalBalance 
       }
     });
 

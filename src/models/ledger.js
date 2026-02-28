@@ -98,18 +98,22 @@ LedgerSchema.index({ parentTransactionId: 1 }, { sparse: true });
 LedgerSchema.index({ userId: 1, _id: -1 });
 
 // --- FINTECH IMMUTABILITY GUARD ---
-/**
- * FIX 2: In the financial world, once a ledger entry is written, it is permanent.
- * This middleware prevents any rogue code from accidentally updating a transaction's amount or category.
- */
-LedgerSchema.pre('save', function(next) {
+// This ensures that once a transaction is COMPLETED, it cannot be edited.
+// --- FINTECH IMMUTABILITY GUARD ---
+// Using async/await is the modern way to avoid "next is not a function" errors.
+LedgerSchema.pre('save', async function() { // <--- Note: No 'next' in the arguments
+  // 1. Check if this is an update to a COMPLETED record
   if (!this.isNew && this.status === 'COMPLETED') {
-    // Only allow updates if we are explicitly changing the status to VOIDED
-    if (!this.isModified('status') || this.status !== 'VOIDED') {
-      return next(new Error('Strict FinTech Compliance: Cannot modify a completed ledger entry. Create a reversal instead.'));
+    
+    // 2. Allow change ONLY if status is moving to VOIDED
+    const isVoiding = this.isModified('status') && this.status === 'VOIDED';
+    
+    if (!isVoiding) {
+      throw new Error('Strict FinTech Compliance: Cannot modify a completed ledger entry.');
     }
   }
-  next();
+  
+  // With async functions, simply returning is the same as calling next()
+  return; 
 });
-
 module.exports = mongoose.model('Ledger', LedgerSchema);
