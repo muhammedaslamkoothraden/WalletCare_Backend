@@ -5,7 +5,6 @@ const Account = require('../models/Account');
 
 /**
  * @description Atomic Handler for all Ledger movements.
- * Optimized for Mongoose Virtuals and safe Decimal math.
  */
 exports.processTransaction = async (req, res, next) => {
   const session = await mongoose.startSession();
@@ -19,22 +18,16 @@ exports.processTransaction = async (req, res, next) => {
     } = req.body;
 
     // --- 1. PRE-FLIGHT CHECKS ---
-    if (!idempotencyKey) {
-      return res.status(400).json({ error: 'idempotencyKey is required' });
-    }
+    if (!idempotencyKey) return res.status(400).json({ error: 'idempotencyKey is required' });
 
     const existingLedger = await Ledger.findOne({ userId, idempotencyKey }).session(session);
     if (existingLedger) {
       await session.abortTransaction();
-      return res.status(409).json({ message: 'Conflict: Duplicate idempotency key', ledger: existingLedger });
+      return res.status(409).json({ message: 'Conflict: Duplicate key', ledger: existingLedger });
     }
 
     const account = await Account.findOne({ _id: accountId, userId }).session(session);
-    if (!account) {
-      const error = new Error('Account target not found');
-      error.status = 404;
-      throw error;
-    }
+    if (!account) throw new Error('Account target not found');
 
     // --- 2. PRECISE MATH SETUP ---
     const safeAmount = new Decimal(amount.toString());
@@ -46,30 +39,23 @@ exports.processTransaction = async (req, res, next) => {
 
     // --- 3. LOGIC ENGINE ---
     if (transactionType === 'REVERSAL') {
-      if (!parentTransactionId) throw new Error('Parent ID required for reversal');
-
+      if (!parentTransactionId) throw new Error('Parent ID required');
       const original = await Ledger.findById(parentTransactionId).session(session);
-      if (!original || original.status === 'VOIDED') throw new Error('Original record unavailable or voided');
+      if (!original || original.status === 'VOIDED') throw new Error('Original unavailable');
 
-      // Determine if original was money leaving the available pool
-      const wasMoneyOut = original.direction === 'DEBIT' ||
-        (original.transactionType === 'EXPENSE' && original.direction === 'NORMAL') ||
-        original.direction === 'GOAL_ALLOCATION';
+      const wasMoneyOut = original.direction === 'DEBIT' || 
+                         original.transactionType === 'EXPENSE' || 
+                         original.direction === 'GOAL_ALLOCATION';
 
       balanceChange = wasMoneyOut ? safeAmount : safeAmount.negated();
-
       if (original.direction === 'GOAL_ALLOCATION') reservedChange = safeAmount.negated();
-      if (original.direction === 'GOAL_DEALLOCATION') reservedChange = safeAmount;
-
+      
       original.status = 'VOIDED';
       await original.save({ session });
-
     } else {
-      // Standard Logic Mapping
-      if (transactionType === 'INCOME' && direction === 'NORMAL') balanceChange = safeAmount;
-      else if (transactionType === 'EXPENSE' && direction === 'NORMAL') balanceChange = safeAmount.negated();
-      else if (direction === 'CREDIT') balanceChange = safeAmount; 
-      else if (direction === 'DEBIT') balanceChange = safeAmount.negated();  
+      // Standard Mapping
+      if (transactionType === 'INCOME') balanceChange = safeAmount;
+      else if (transactionType === 'EXPENSE') balanceChange = safeAmount.negated();
       else if (direction === 'GOAL_ALLOCATION') { 
         balanceChange = safeAmount.negated(); 
         reservedChange = safeAmount; 
@@ -80,7 +66,7 @@ exports.processTransaction = async (req, res, next) => {
       }
     }
 
-    // --- 4. INVARIANT SAFETY GUARD ---
+    // --- 4. SAFETY GUARD ---
     const newAvailable = currentAvailable.plus(balanceChange);
     const newReserved = currentReserved.plus(reservedChange);
 
@@ -98,11 +84,8 @@ exports.processTransaction = async (req, res, next) => {
       status: 'COMPLETED'
     }], { session });
 
-    // Update Account balances
     account.availableBalance = mongoose.Types.Decimal128.fromString(newAvailable.toFixed(2));
     account.reservedBalance = mongoose.Types.Decimal128.fromString(newReserved.toFixed(2));
-    
-    // Save account (Virtual totalBalance will be calculated on the fly in the response)
     await account.save({ session });
 
     await session.commitTransaction();
@@ -111,57 +94,43 @@ exports.processTransaction = async (req, res, next) => {
       success: true,
       txid: newLedger._id,
       availableBalance: account.availableBalance.toString(),
-      reservedBalance: account.reservedBalance.toString(),
-      // totalBalance comes from the Mongoose Virtual we set up
-      totalBalance: account.totalBalance 
+      reservedBalance: account.reservedBalance.toString()
     });
 
   } catch (error) {
     if (session.inAtomicityPlaceholder) await session.abortTransaction();
-    next(error); // Passes error to the Global Handler in app.js
+    next(error);
   } finally {
     session.endSession();
   }
 };
 
-/**
- * @description Retrieves transaction history using Keyset Pagination.
- */
+//  history
 exports.getHistory = async (req, res, next) => {
   try {
     const { userId } = req.params;
-    const { accountId, transactionType, category, limit = 20, lastId } = req.query;
+    const { accountId, category, limit = 20, lastId } = req.query;
 
-    if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ error: 'Invalid User ID format' });
+    const query = { userId: new mongoose.Types.ObjectId(userId) };
+
+    if (accountId && mongoose.Types.ObjectId.isValid(accountId)) {
+      query.accountId = new mongoose.Types.ObjectId(accountId);
     }
 
-    const query = { userId };
-    if (accountId && mongoose.Types.ObjectId.isValid(accountId)) query.accountId = accountId;
-    if (transactionType) query.transactionType = transactionType.toUpperCase();
-    if (category) query.category = category;
-    if (lastId && mongoose.Types.ObjectId.isValid(lastId)) query._id = { $lt: lastId };
+    // New: Filter by category if provided
+    if (category && category !== 'All Categories') {
+      query.category = category;
+    }
 
     const history = await Ledger.find(query)
       .sort({ _id: -1 })
       .limit(parseInt(limit))
       .lean();
 
-    const data = history.map(tx => ({
-      ...tx,
-      amount: tx.amount.toString(), 
-      id: tx._id
-    }));
-
-    const nextCursor = data.length > 0 ? data[data.length - 1].id : null;
-
     return res.status(200).json({
       success: true,
-      results: data.length,
-      nextCursor,
-      data
+      data: history.map(tx => ({ ...tx, amount: tx.amount.toString() }))
     });
-
   } catch (error) {
     next(error);
   }
