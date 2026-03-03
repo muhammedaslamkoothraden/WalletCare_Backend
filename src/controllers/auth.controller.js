@@ -1,6 +1,7 @@
 const { User, PendingUser } = require("../models/user");
 const { createOtp, resendOtp } = require("../services/otp.service");
 const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 
 // Register
 exports.registerUser = async (req, res) => {
@@ -83,35 +84,70 @@ exports.loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    // Basic input validation
     if (!email || !password) {
-      return res.status(400).json({ message: "Email and password are required" });
+      return res.status(400).json({ message: "Email and password required" });
     }
 
     const normalizedEmail = email.toLowerCase().trim();
 
-    // select("+password") needed because password field has select: false in schema
-    const user = await User.findOne({ email: normalizedEmail }).select("+password");
+    // Explicitly select password since it is excluded in schema
+    const user = await User.findOne({ email: normalizedEmail })
+      .select("+password");
+
+    // Prevent user enumeration by using generic message
     if (!user) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
+    // Block login if email verification is incomplete
     if (!user.isEmailVerified) {
-      return res.status(403).json({ message: "Please verify your email before logging in" });
+      return res.status(403).json({
+        message: "Please verify your email before logging in"
+      });
     }
 
+    // Compare hashed password
     const isMatch = await bcrypt.compare(password, user.password);
+
     if (!isMatch) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    // userId is temporary — will be replaced with JWT token in next milestone
+    // Short-lived access token (used for authenticated API requests)
+    const accessToken = jwt.sign(
+      { userId: user._id, role: user.role },
+      process.env.ACCESS_TOKEN_SECRET,
+      { expiresIn: process.env.ACCESS_TOKEN_EXPIRY }
+    );
+
+    // Long-lived refresh token (used to obtain new access tokens)
+    const refreshToken = jwt.sign(
+      { userId: user._id },
+      process.env.REFRESH_TOKEN_SECRET,
+      { expiresIn: process.env.REFRESH_TOKEN_EXPIRY }
+    );
+
+    // Store hashed refresh token for revocation control
+    const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
+    user.refreshToken = hashedRefreshToken;
+    await user.save();
+
     return res.status(200).json({
-      message: "Login successful",
-      userId: user._id
+      accessToken,
+      refreshToken,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isPremium: user.isPremium,
+        isEmailVerified: user.isEmailVerified
+      }
     });
 
   } catch (error) {
-    console.error("loginUser error:", error.message);
+    // Avoid leaking internal error details
     return res.status(500).json({ message: "Server error" });
   }
 };

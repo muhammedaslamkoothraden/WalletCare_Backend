@@ -9,7 +9,8 @@ const userSchema = new mongoose.Schema(
     phone: { type: String, default: null },
     isPremium: { type: Boolean, default: false },
     role: { type: String, enum: ["user", "admin"], default: "user" },
-    isEmailVerified: { type: Boolean, default: false }
+    isEmailVerified: { type: Boolean, default: false },
+    refreshToken: { type: String, default: null, select: false },
   },
   { timestamps: true }
 );
