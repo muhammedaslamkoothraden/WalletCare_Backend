@@ -1,4 +1,5 @@
 require("dotenv").config();
+require("./jobs/goalOverdue.job"); // Start the cron job for overdue goals
 
 const app = require("./app");
 const connectDB = require("./config/db");

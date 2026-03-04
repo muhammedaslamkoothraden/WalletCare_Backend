@@ -57,6 +57,9 @@ const goalSchema = new mongoose.Schema(
     },
   },
   { timestamps: true }
+  
 );
+goalSchema.index({ userId: 1, status: 1 });
+goalSchema.index({ userId: 1, targetDate: 1 });
 
 module.exports = mongoose.models.Goal || mongoose.model("Goal", goalSchema);

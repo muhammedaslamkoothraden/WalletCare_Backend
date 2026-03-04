@@ -2,45 +2,52 @@ const mongoose = require('mongoose');
 const Decimal = require('decimal.js'); 
 const Account = require('../models/Account');
 
-/**
- * @description Retrieves balances and calculates global net worth.
- */
 exports.getAccountBalances = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { accountId } = req.query;
+    const { accountId, type } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(userId)) {
       return res.status(400).json({ error: 'Valid UserId is required' });
     }
 
-    const query = { userId, status: { $in: ['ACTIVE', 'FROZEN'] } };
-    if (accountId) query._id = accountId;
+    // FIX: Prevent Mongoose CastError if frontend sends a bad accountId
+    if (accountId && !mongoose.Types.ObjectId.isValid(accountId)) {
+      return res.status(400).json({ error: 'Invalid AccountId format' });
+    }
 
-    // FIX 1: REMOVED .lean()
-    // Virtuals (like totalBalance) do NOT work with .lean() by default. 
-    // We need the full Mongoose documents to trigger the Virtual getter.
+    const query = { userId, status: { $in: ['ACTIVE', 'FROZEN'] } };
+    
+    if (accountId) query._id = accountId;
+    
+    if (type && type.toUpperCase() !== 'ALL') {
+      const cleanType = type.trim();
+      query.type = new RegExp(`^${cleanType}$`, 'i'); 
+    }
+
     const accounts = await Account.find(query);
 
     if (!accounts || accounts.length === 0) {
       return res.status(200).json({ 
         success: true, 
-        accounts: [], 
+        accounts:[], 
         globalSummary: { totalAvailable: "0.00", totalReserved: "0.00", netWorth: "0.00" } 
       });
     }
 
-    // FIX 2: Using the Virtual 'totalBalance'
     const formattedAccounts = accounts.map(acc => {
+      const availableStr = acc.availableBalance ? acc.availableBalance.toString() : "0.00";
+      const reservedStr = acc.reservedBalance ? acc.reservedBalance.toString() : "0.00";
+      const fallbackTotal = new Decimal(availableStr).plus(new Decimal(reservedStr)).toFixed(2);
+
       return {
         id: acc._id,
         name: acc.name,
         type: acc.type,
-        currency: acc.currency,
-        available: acc.availableBalance.toString(),
-        reserved: acc.reservedBalance.toString(),
-        // This now calls your new Virtual in Account.js
-        total: acc.totalBalance, 
+        currency: acc.currency || 'INR',
+        available: availableStr,
+        reserved: reservedStr,
+        total: acc.totalBalance ? acc.totalBalance.toString() : fallbackTotal, 
         isDefault: acc.isDefault,
         status: acc.status
       };
@@ -51,9 +58,9 @@ exports.getAccountBalances = async (req, res) => {
     let netWorth = new Decimal(0);
 
     formattedAccounts.forEach(acc => {
-      totalAvailable = totalAvailable.plus(acc.available);
-      totalReserved = totalReserved.plus(acc.reserved);
-      netWorth = netWorth.plus(acc.total);
+      totalAvailable = totalAvailable.plus(new Decimal(acc.available));
+      totalReserved = totalReserved.plus(new Decimal(acc.reserved));
+      netWorth = netWorth.plus(new Decimal(acc.total));
     });
 
     return res.status(200).json({
@@ -69,25 +76,20 @@ exports.getAccountBalances = async (req, res) => {
 
   } catch (error) {
     console.error('FETCH_BALANCES_ERROR:', error);
-    return res.status(500).json({ error: 'Internal Server Error' });
+    return res.status(500).json({ error: 'Internal Server Error', details: error.message });
   }
 };
 
-/**
- * @description Creates a new account.
- */
 exports.createAccount = async (req, res) => {
   try {
     const { userId, name, type } = req.body;
-
     const allowedTypes = ['CASH', 'BANK'];
+    
     if (!type || !allowedTypes.includes(type.toUpperCase())) {
       return res.status(400).json({ error: 'Invalid type. Must be CASH or BANK' });
     }
 
     const existingAccounts = await Account.countDocuments({ userId, status: { $ne: 'CLOSED' } });
-    
-    // Logic: First account is default, or any new CASH account becomes the default
     const isDefault = existingAccounts === 0 || type.toUpperCase() === 'CASH';
 
     if (isDefault) {
@@ -112,9 +114,10 @@ exports.createAccount = async (req, res) => {
         type: newAccount.type,
         isDefault: newAccount.isDefault,
         status: newAccount.status,
-        availableBalance: newAccount.availableBalance.toString(),
-        // Including totalBalance via the Virtual
-        totalBalance: newAccount.totalBalance 
+        // FIX: Match the exact mapping keys expected by the frontend AccountModel
+        available: newAccount.availableBalance.toString(),
+        reserved: newAccount.reservedBalance.toString(),
+        total: newAccount.totalBalance.toString()
       }
     });
 

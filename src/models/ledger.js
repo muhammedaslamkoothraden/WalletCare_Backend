@@ -99,21 +99,18 @@ LedgerSchema.index({ userId: 1, _id: -1 });
 
 // --- FINTECH IMMUTABILITY GUARD ---
 // This ensures that once a transaction is COMPLETED, it cannot be edited.
-// --- FINTECH IMMUTABILITY GUARD ---
-// Using async/await is the modern way to avoid "next is not a function" errors.
-LedgerSchema.pre('save', async function() { // <--- Note: No 'next' in the arguments
-  // 1. Check if this is an update to a COMPLETED record
+LedgerSchema.pre('save', async function() { 
   if (!this.isNew && this.status === 'COMPLETED') {
-    
-    // 2. Allow change ONLY if status is moving to VOIDED
     const isVoiding = this.isModified('status') && this.status === 'VOIDED';
     
-    if (!isVoiding) {
-      throw new Error('Strict FinTech Compliance: Cannot modify a completed ledger entry.');
+    // FIX: Ensure NO other fields (amount, accountId, etc) are being tampered with
+    const modifiedPaths = this.modifiedPaths();
+    const illegalModifications = modifiedPaths.some(path => path !== 'status' && path !== 'updatedAt');
+
+    if (!isVoiding || illegalModifications) {
+      throw new Error('Strict FinTech Compliance: Cannot modify a completed ledger entry except to VOID it.');
     }
   }
-  
-  // With async functions, simply returning is the same as calling next()
   return; 
 });
 module.exports = mongoose.model('Ledger', LedgerSchema);
