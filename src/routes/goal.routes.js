@@ -12,6 +12,7 @@ const {
   withdrawFromGoal
 } = require("../controllers/goal.controller");
 
+
 // Protect all routes
 router.post("/", authMiddleware, createGoal);
 router.get("/", authMiddleware, getGoals);
