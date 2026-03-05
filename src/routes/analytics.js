@@ -1,9 +1,9 @@
 const express = require('express');
 const router = express.Router();
-// Ensure this path actually leads to your controller file
+const authMiddleware = require('../middlewares/auth'); 
+
 const analyticsController = require('../controllers/analyticsController');
 
-// Check that 'getAnalyticsOverview' is spelled exactly the same here and in the controller
-router.get('/analytics', analyticsController.getAnalyticsOverview);
+router.get('/analytics', authMiddleware, analyticsController.getAnalyticsDashboard);
 
 module.exports = router;
