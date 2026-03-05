@@ -1,10 +1,9 @@
 const mongoose = require('mongoose');
-const Decimal = require('decimal.js'); // Required for safe Net Worth math
+const Decimal = require('decimal.js');
 const Account = require('../models/Account');
 
 /**
- * @description Retrieves balances for all user accounts and calculates a global net worth.
- * Supports single account lookup via query param ?accountId=...
+ * @description Retrieves balances and calculates Net Worth on-the-fly.
  */
 exports.getAccountBalances = async (req, res) => {
   try {
@@ -15,8 +14,7 @@ exports.getAccountBalances = async (req, res) => {
       return res.status(400).json({ error: 'Valid UserId is required' });
     }
 
-    // FIX 1: Use the updated 'status' enum instead of 'isActive'
-    // You might want to include FROZEN accounts in net worth, but definitely not CLOSED ones.
+    // Filter: Include ACTIVE and FROZEN for Net Worth, exclude CLOSED.
     const query = { userId, status: { $in: ['ACTIVE', 'FROZEN'] } };
     if (accountId) query._id = accountId;
 
@@ -30,30 +28,36 @@ exports.getAccountBalances = async (req, res) => {
       });
     }
 
-    // 3. Transform Data for Frontend
+    // 1. Initialize Global Aggregators
+    let globalAvailable = new Decimal(0);
+    let globalReserved = new Decimal(0);
+    let globalNetWorth = new Decimal(0);
+
+    // 2. Transform Data and Calculate
     const formattedAccounts = accounts.map(acc => {
+      // FIX: Always use .toString() before passing to Decimal.js to avoid DecimalError
+      const avail = new Decimal(acc.availableBalance?.toString() || "0");
+      const resv = new Decimal(acc.reservedBalance?.toString() || "0");
+      
+      // Individual Account Total (Net Worth per account)
+      const accountTotal = avail.plus(resv);
+
+      // Add to Global Totals
+      globalAvailable = globalAvailable.plus(avail);
+      globalReserved = globalReserved.plus(resv);
+      globalNetWorth = globalNetWorth.plus(accountTotal);
+
       return {
         id: acc._id,
         name: acc.name,
         type: acc.type,
         currency: acc.currency,
-        available: acc.availableBalance.toString(),
-        reserved: acc.reservedBalance.toString(),
-        total: acc.totalBalance.toString(),
+        available: avail.toFixed(2),
+        reserved: resv.toFixed(2),
+        total: accountTotal.toFixed(2), // Calculated on the fly
         isDefault: acc.isDefault,
         status: acc.status
       };
-    });
-
-    // FIX 2: Safely Calculate Global Summary using Decimal.js
-    let totalAvailable = new Decimal(0);
-    let totalReserved = new Decimal(0);
-    let netWorth = new Decimal(0);
-
-    formattedAccounts.forEach(acc => {
-      totalAvailable = totalAvailable.plus(acc.available);
-      totalReserved = totalReserved.plus(acc.reserved);
-      netWorth = netWorth.plus(acc.total);
     });
 
     return res.status(200).json({
@@ -61,9 +65,9 @@ exports.getAccountBalances = async (req, res) => {
       timestamp: new Date().toISOString(),
       accounts: formattedAccounts,
       globalSummary: {
-        totalAvailable: totalAvailable.toFixed(2),
-        totalReserved: totalReserved.toFixed(2),
-        netWorth: netWorth.toFixed(2)
+        totalAvailable: globalAvailable.toFixed(2),
+        totalReserved: globalReserved.toFixed(2),
+        netWorth: globalNetWorth.toFixed(2) // This is your calculated Net Worth
       }
     });
 
@@ -74,37 +78,31 @@ exports.getAccountBalances = async (req, res) => {
 };
 
 /**
- * @description Creates a new account. 
- * Enforces types: 'CASH' or 'BANK'.
- * All accounts start at 0.00. Use Ledger for opening balances.
+ * @description Creates a new account starting at 0.00.
  */
 exports.createAccount = async (req, res) => {
   try {
-    // FIX 3: Removed initialBalance. Accounts must strictly start at zero.
     const { userId, name, type } = req.body;
 
-    // 1. Strict Type Validation
     const allowedTypes = ['CASH', 'BANK'];
-    if (!allowedTypes.includes(type.toUpperCase())) {
+    if (!type || !allowedTypes.includes(type.toUpperCase())) {
       return res.status(400).json({ error: 'Invalid type. Must be CASH or BANK' });
     }
 
-    // 2. Default Logic
-    const existingAccounts = await Account.countDocuments({ userId, status: { $ne: 'CLOSED' } });
-    const isDefault = existingAccounts === 0 || type.toUpperCase() === 'CASH';
+    // Default Logic: First account or any CASH account becomes default
+    const existingCount = await Account.countDocuments({ userId, status: { $ne: 'CLOSED' } });
+    const isDefault = existingCount === 0 || type.toUpperCase() === 'CASH';
 
-    // 3. If this is a new default, remove default status from previous accounts
     if (isDefault) {
       await Account.updateMany({ userId }, { isDefault: false });
     }
 
-    // 4. Create the Account (Schema defaults automatically handle the 0.00 balances)
     const newAccount = new Account({
       userId,
-      name: name || (type === 'CASH' ? 'Main Cash' : 'New Bank'),
+      name: name || (type.toUpperCase() === 'CASH' ? 'Main Cash' : 'New Bank'),
       type: type.toUpperCase(),
       isDefault: isDefault,
-      status: 'ACTIVE' // FIX 1: Updated to match schema
+      status: 'ACTIVE'
     });
 
     await newAccount.save();
@@ -115,9 +113,8 @@ exports.createAccount = async (req, res) => {
         id: newAccount._id,
         name: newAccount.name,
         type: newAccount.type,
-        isDefault: newAccount.isDefault,
-        status: newAccount.status,
-        balance: newAccount.availableBalance.toString()
+        available: "0.00",
+        total: "0.00"
       }
     });
 

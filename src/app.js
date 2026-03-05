@@ -23,7 +23,7 @@ app.use(express.json());
 
 // Routes
 app.use("/api/auth", authRoutes);
-app.use("/api/account", AccountRoutes);
+app.use("/api/account",authMiddleware,AccountRoutes);
 app.use("/api/transaction", transactionRoutes);
 app.use("/api/goals", authMiddleware, goalRoutes);
 app.use("/api/analytics", analyticsRoutes);
