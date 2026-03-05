@@ -5,11 +5,12 @@ const Goal = require('../models/Goal');
 exports.getAnalyticsDashboard = async (req, res) => {
   try {
     const userId = new mongoose.Types.ObjectId(req.user.id);
-    const { accountType } = req.query; // Supports 'CASH', 'BANK', or 'All'
+    const { accountType } = req.query; // 'CASH', 'BANK', or 'All'
 
-    // --- 1. Dynamic Match Stage ---
-    // This allows the "Cash/Account" filter in Flutter to work
+    // --- 1. Filter Setup ---
     const matchStage = { userId, status: 'COMPLETED' };
+    
+    // If user selects "Cash" in Flutter, we filter here
     if (accountType && accountType !== 'All') {
       matchStage.accountType = accountType.toUpperCase();
     }
@@ -18,15 +19,16 @@ exports.getAnalyticsDashboard = async (req, res) => {
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
 
-    // --- 2. Run All Aggregations Concurrently ---
+    // --- 2. Parallel Aggregations ---
     const [summary, topCategories, monthlyTrend, debts, goals] = await Promise.all([
-      // A. Total Income vs Expense (Current Month)
+      
+      // A. Income vs Expense (Donut Chart Data)
       Ledger.aggregate([
         { $match: { ...matchStage, createdAt: { $gte: startOfMonth } } },
         { $group: { _id: '$transactionType', total: { $sum: '$amount' } } }
       ]),
 
-      // B. Top 4 Spending Categories
+      // B. Top 4 Categories (Bar Chart Data)
       Ledger.aggregate([
         { $match: { ...matchStage, transactionType: 'EXPENSE', createdAt: { $gte: startOfMonth } } },
         { $group: { _id: '$category', total: { $sum: '$amount' } } },
@@ -34,7 +36,7 @@ exports.getAnalyticsDashboard = async (req, res) => {
         { $limit: 4 }
       ]),
 
-      // C. 6-Month Trend Data (Line Chart)
+      // C. 6-Month Trend (Line Chart Data)
       Ledger.aggregate([
         { $match: { ...matchStage, createdAt: { $gte: sixMonthsAgo } } },
         {
@@ -50,34 +52,36 @@ exports.getAnalyticsDashboard = async (req, res) => {
         { $sort: { '_id.year': 1, '_id.month': 1 } }
       ]),
 
-      // D. Debt Overview
+      // D. Debt Totals
       Ledger.aggregate([
         { $match: { userId, transactionType: 'DEBT_MANAGEMENT' } },
         { $group: { _id: '$direction', total: { $sum: '$amount' } } }
       ]),
 
-      // E. Goal Progress
+      // E. Goals List
       Goal.find({ userId, status: 'active' }).select('title targetAmount currentAmount')
     ]);
 
-    // --- 3. Format Response ---
-    const formattedSummary = {
-      income: summary.find(s => s._id === 'INCOME')?.total || 0,
-      expense: summary.find(s => s._id === 'EXPENSE')?.total || 0,
-    };
+    // --- 3. Data Formatting ---
+    const income = summary.find(s => s._id === 'INCOME')?.total || 0;
+    const expense = summary.find(s => s._id === 'EXPENSE')?.total || 0;
 
     res.status(200).json({
       success: true,
       data: {
         summary: {
-          ...formattedSummary,
-          net: formattedSummary.income - Math.abs(formattedSummary.expense)
+          income,
+          expense: Math.abs(expense),
+          net: income - Math.abs(expense)
         },
-        topCategories: topCategories.map(c => ({ category: c._id, amount: c.total })),
+        topCategories: topCategories.map(c => ({ 
+          category: c._id, 
+          amount: Math.abs(c.total) 
+        })),
         monthlyTrend: monthlyTrend.map(t => ({
           month: t._id.month,
           type: t._id.type,
-          amount: t.total
+          amount: Math.abs(t.total)
         })),
         debts: {
           toReceive: debts.find(d => d._id === 'DEBIT')?.total || 0,
@@ -90,6 +94,7 @@ exports.getAnalyticsDashboard = async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error("Analytics Error:", error);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
   }
 };
