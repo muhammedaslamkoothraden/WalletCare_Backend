@@ -102,14 +102,18 @@ LedgerSchema.index({ userId: 1, _id: -1 });
  * FIX 2: In the financial world, once a ledger entry is written, it is permanent.
  * This middleware prevents any rogue code from accidentally updating a transaction's amount or category.
  */
-LedgerSchema.pre('save', function(next) {
+// --- FINTECH IMMUTABILITY GUARD ---
+LedgerSchema.pre('save', async function() {
+  // If this isn't a new document and it was already marked as COMPLETED
   if (!this.isNew && this.status === 'COMPLETED') {
-    // Only allow updates if we are explicitly changing the status to VOIDED
-    if (!this.isModified('status') || this.status !== 'VOIDED') {
-      return next(new Error('Strict FinTech Compliance: Cannot modify a completed ledger entry. Create a reversal instead.'));
+    // Only allow modification if we are specifically switching status to 'VOIDED'
+    const isVoiding = this.isModified('status') && this.status === 'VOIDED';
+    
+    if (!isVoiding) {
+      throw new Error('Strict FinTech Compliance: Cannot modify a completed ledger entry. Create a reversal instead.');
     }
   }
-  next();
+  // No need for next() when using async or returning a value
 });
 
 module.exports = mongoose.model('Ledger', LedgerSchema);
