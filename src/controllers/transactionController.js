@@ -12,10 +12,13 @@ exports.processTransaction = async (req, res, next) => {
 
   try {
     const {
-      userId, accountId, amount, transactionType,
+      accountId, amount, transactionType,
       direction, category, description, idempotencyKey,
       parentTransactionId 
     } = req.body;
+
+    // Authenticated user from JWT — never trust userId from client
+    const userId = req.user._id;
 
     // --- 1. PRE-FLIGHT CHECKS ---
     if (!idempotencyKey) return res.status(400).json({ error: 'idempotencyKey is required' });
@@ -108,10 +111,19 @@ exports.processTransaction = async (req, res, next) => {
 //  history
 exports.getHistory = async (req, res, next) => {
   try {
-    const { userId } = req.params;
-    const { accountId, category, limit = 20, lastId } = req.query;
+    // Authenticated user from JWT — never trust userId from client
+    const userId = req.user._id;
 
-    const query = { userId: new mongoose.Types.ObjectId(userId) };
+    const { 
+      accountId, 
+      transactionType, 
+      category, 
+      limit = 20, 
+      page = 1 
+    } = req.query;
+
+    // 1. Build Query Object
+    const query = { userId };
 
     if (accountId && mongoose.Types.ObjectId.isValid(accountId)) {
       query.accountId = new mongoose.Types.ObjectId(accountId);

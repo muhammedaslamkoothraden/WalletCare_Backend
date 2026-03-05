@@ -9,7 +9,7 @@ const transactionRoutes = require("./routes/transaction.routes");
 const authRoutes = require("./routes/auth.routes");
 const goalRoutes = require("./routes/goal.routes");
 
-const authMiddleware = require("./middlewares/auth");
+const authMiddleware = require("./middlewares/auth.middleware");
 
 const app = express();
 

@@ -4,8 +4,8 @@ const Account = require('../models/Account');
 
 exports.getAccountBalances = async (req, res) => {
   try {
-    const { userId } = req.params;
-    const { accountId, type } = req.query;
+    const userId = req.user._id; // changed from req.params to JWT user
+    const { accountId } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(userId)) {
       return res.status(400).json({ error: 'Valid UserId is required' });
@@ -36,32 +36,30 @@ exports.getAccountBalances = async (req, res) => {
     }
 
     const formattedAccounts = accounts.map(acc => {
-      const availableStr = acc.availableBalance ? acc.availableBalance.toString() : "0.00";
-      const reservedStr = acc.reservedBalance ? acc.reservedBalance.toString() : "0.00";
-      const fallbackTotal = new Decimal(availableStr).plus(new Decimal(reservedStr)).toFixed(2);
+      const avail = acc.availableBalance.toString();
+      const reserved = acc.reservedBalance.toString();
+      const total = acc.totalBalance.toString();
 
       return {
         id: acc._id,
         name: acc.name,
         type: acc.type,
-        currency: acc.currency || 'INR',
-        available: availableStr,
-        reserved: reservedStr,
-        total: acc.totalBalance ? acc.totalBalance.toString() : fallbackTotal, 
-        isDefault: acc.isDefault,
-        status: acc.status
+        currency: acc.currency,
+        available: avail,
+        reserved: reserved,
+        total: total,
+        isDefault: acc.isDefault
       };
     });
 
-    let totalAvailable = new Decimal(0);
-    let totalReserved = new Decimal(0);
-    let netWorth = new Decimal(0);
-
-    formattedAccounts.forEach(acc => {
-      totalAvailable = totalAvailable.plus(new Decimal(acc.available));
-      totalReserved = totalReserved.plus(new Decimal(acc.reserved));
-      netWorth = netWorth.plus(new Decimal(acc.total));
-    });
+    // 4. Calculate Global Summary (Total Net Worth across all accounts)
+    const globalSummary = formattedAccounts.reduce((summary, acc) => {
+      return {
+        totalAvailable: (parseFloat(summary.totalAvailable) + parseFloat(acc.available)).toFixed(2),
+        totalReserved: (parseFloat(summary.totalReserved) + parseFloat(acc.reserved)).toFixed(2),
+        netWorth: (parseFloat(summary.netWorth) + parseFloat(acc.total)).toFixed(2)
+      };
+    }, { totalAvailable: 0, totalReserved: 0, netWorth: 0 });
 
     return res.status(200).json({
       success: true,
@@ -80,16 +78,26 @@ exports.getAccountBalances = async (req, res) => {
   }
 };
 
+
+/**
+ * @description Creates a new account. 
+ * Enforces types: 'CASH' or 'BANK'.
+ * Handles 'isDefault' logic for Cash accounts.
+ */
 exports.createAccount = async (req, res) => {
   try {
-    const { userId, name, type } = req.body;
+    const { name, type, initialBalance = 0 } = req.body;
+    const userId = req.user._id; // changed from req.body to JWT user
+
+    // 1. Strict Type Validation
     const allowedTypes = ['CASH', 'BANK'];
     
     if (!type || !allowedTypes.includes(type.toUpperCase())) {
       return res.status(400).json({ error: 'Invalid type. Must be CASH or BANK' });
     }
 
-    const existingAccounts = await Account.countDocuments({ userId, status: { $ne: 'CLOSED' } });
+    // 2. Default Logic
+    const existingAccounts = await Account.countDocuments({ userId });
     const isDefault = existingAccounts === 0 || type.toUpperCase() === 'CASH';
 
     if (isDefault) {

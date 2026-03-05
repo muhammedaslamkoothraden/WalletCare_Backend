@@ -1,12 +1,15 @@
 const express = require('express');
 const router = express.Router();
+const protect = require('../middlewares/auth.middleware');
 const accountController = require('../controllers/AccountController');
-// const requireAuth = require('../middleware/authMiddleware'); // Future addition
+
+// Protect all account routes
+router.use(protect);
 
 // Create account (CASH or BANK)
-router.post('/create', /* requireAuth, */ accountController.createAccount);
+router.post('/create', accountController.createAccount);
 
-// Get All Accounts (Dashboard View)
-router.get('/balances/:userId', /* requireAuth, */ accountController.getAccountBalances);
+// 1. Get All Accounts (Dashboard View) and add accountId for specific account details
+router.get('/balances', accountController.getAccountBalances);
 
 module.exports = router;
