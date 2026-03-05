@@ -1,40 +1,9 @@
-// controllers/analyticsController.js
-const Ledger = require('../models/Ledger');
-const mongoose = require('mongoose');
+const express = require('express');
+const router = express.Router();
+// Ensure this path actually leads to your controller file
+const analyticsController = require('../controllers/analyticsController');
 
-exports.getAnalyticsOverview = async (req, res) => {
-    try {
-        // Since no JWT, we get the ID from the URL: /api/analytics?userId=XXXX
-        const { userId } = req.query;
+// Check that 'getAnalyticsOverview' is spelled exactly the same here and in the controller
+router.get('/analytics', analyticsController.getAnalyticsOverview);
 
-        if (!userId) {
-            return res.status(400).json({ success: false, message: "User ID is required" });
-        }
-
-        const userObjectId = new mongoose.Types.ObjectId(userId);
-
-        const analytics = await Ledger.aggregate([
-            // 1. Filter only this user's data
-            { $match: { userId: userObjectId } },
-            {
-                $facet: {
-                    "monthlyTrend": [
-                        { $group: {
-                            _id: { month: { $month: "$createdAt" }, type: "$transactionType" },
-                            total: { $sum: { $toDouble: "$amount" } }
-                        }},
-                        { $sort: { "_id.month": 1 } }
-                    ],
-                    "categories": [
-                        { $match: { transactionType: 'DEBIT' } },
-                        { $group: { _id: "$category", total: { $sum: { $toDouble: "$amount" } } } }
-                    ]
-                }
-            }
-        ]);
-
-        res.status(200).json({ success: true, data: analytics[0] });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
+module.exports = router;
