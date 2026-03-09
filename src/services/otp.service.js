@@ -15,17 +15,16 @@ const generateOtp = async () => {
   return { otp, otpHash };
 };
 
-exports.createOtp = async (identifier, purpose = "signup") => {
+exports.createOtp = async (identifier, purpose = "signup", resendCount = 0) => {
   const id = identifier.toLowerCase().trim();
   const { otp, otpHash } = await generateOtp();
 
-  // upsert — replaces existing OTP if one exists for this identifier + purpose
   await Otp.findOneAndUpdate(
     { identifier: id, purpose },
     {
       otpHash,
       attempts: 0,
-      resendCount: 0,
+      resendCount,          // ← stays in sync with PendingUser.resendCount
       lastSentAt: new Date(),
       expiresAt: new Date(Date.now() + OTP_EXPIRY_MS)
     },
@@ -91,7 +90,10 @@ exports.verifyOtp = async (identifier, otp, purpose = "signup", session = null) 
 
     if (updated.attempts >= MAX_VERIFY_ATTEMPTS) {
       await Otp.deleteOne({ _id: record._id });
-      throw new Error("Maximum OTP attempts exceeded. Please request a new OTP.");
+      // flag so controller knows OTP was deleted by max attempts, not natural expiry
+      const error = new Error("Maximum OTP attempts exceeded. Please request a new OTP.");
+      error.code = "MAX_ATTEMPTS_EXCEEDED";
+      throw error;
     }
 
     throw new Error(`Invalid OTP. ${MAX_VERIFY_ATTEMPTS - updated.attempts} attempt(s) remaining.`);

@@ -55,6 +55,15 @@ exports.verifyEmailOtp = async (req, res) => {
 
     console.error("verifyEmailOtp error:", error.message);
 
+    // OTP deleted by max wrong attempts — flag PendingUser to block resend bypass
+    if (error.code === "MAX_ATTEMPTS_EXCEEDED") {
+      await PendingUser.findOneAndUpdate(
+        { email: req.body.email?.toLowerCase().trim() },
+        { otpExhausted: true }
+      );
+      return res.status(400).json({ message: "Maximum OTP attempts exceeded. Please request a new OTP." });
+    }
+
     return res.status(400).json({ message: error.message || "OTP verification failed" });
   }
 };

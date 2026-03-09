@@ -1,8 +1,11 @@
 const { User, PendingUser } = require("../models/user");
+const Otp = require("../models/otp");
 const { createOtp, resendOtp } = require("../services/otp.service");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+
+const OTP_EXPIRY_MS = 10 * 60 * 1000;
 
 // SHA-256 hash for refresh tokens — deterministic, allows atomic DB lookup
 function hashToken(token) {
@@ -43,12 +46,19 @@ exports.registerUser = async (req, res) => {
 
       try {
         await resendOtp(normalizedEmail, "signup");
+        await PendingUser.findOneAndUpdate(
+          { email: normalizedEmail },
+          { otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS) }
+        );
         return res.status(200).json({ message: "A verification OTP has been sent to your email" });
 
       } catch (resendError) {
-        // OTP deleted (expired or max attempts) — start fresh lifecycle
         if (resendError.message === "OTP_EXPIRED") {
           await createOtp(normalizedEmail, "signup");
+          await PendingUser.findOneAndUpdate(
+            { email: normalizedEmail },
+            { otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS) }
+          );
           return res.status(200).json({ message: "A verification OTP has been sent to your email" });
         }
 
@@ -72,7 +82,8 @@ exports.registerUser = async (req, res) => {
       email: normalizedEmail,
       password: hashedPassword,
       phone,
-      role: "user"
+      role: "user",
+      otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS)
     });
 
     await createOtp(normalizedEmail, "signup");
@@ -148,7 +159,6 @@ exports.loginUser = async (req, res) => {
     });
 
   } catch (error) {
-    // Avoid leaking internal error details
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -170,9 +180,61 @@ exports.resendEmailOtp = async (req, res) => {
       return res.status(200).json({ message: "If a pending registration exists, a new OTP has been sent." });
     }
 
+    const currentResendCount = pendingUser.resendCount;
+
+    if (currentResendCount >= 5) {
+      if (pendingUser.otpExhausted) {
+        const now = new Date();
+        const expiresAt = pendingUser.otpExpiresAt;
+
+        if (expiresAt && expiresAt > now) {
+          // OTP deleted by max attempts and wait time not over — tell user how long to wait
+          const secondsLeft = Math.ceil((expiresAt - now) / 1000);
+          const minutesLeft = Math.ceil(secondsLeft / 60);
+          return res.status(429).json({
+            message: `Maximum resend attempts reached. Please wait ${minutesLeft} minute(s) until the OTP expires.`,
+            retryAfter:secondsLeft
+          });
+        }
+
+        // otpExpiresAt has passed — treat as natural expiry, reset everything
+        await createOtp(normalizedEmail, "signup", 1);
+        await PendingUser.findByIdAndUpdate(pendingUser._id, {
+          resendCount: 1,
+          otpExhausted: false,
+          otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS)
+        });
+        return res.status(200).json({ message: "OTP resent successfully." });
+      }
+
+      // resendCount >= 5 but not exhausted — check if OTP still alive
+      const existingOtp = await Otp.findOne({ identifier: normalizedEmail, purpose: "signup" });
+
+      if (existingOtp) {
+        // OTP still alive — block
+        return res.status(429).json({ message: "Maximum resend attempts reached. Please wait until the OTP expires." });
+      }
+
+      // OTP expired naturally — reset and allow fresh start
+      await createOtp(normalizedEmail, "signup", 1);
+      await PendingUser.findByIdAndUpdate(pendingUser._id, {
+        resendCount: 1,
+        otpExhausted: false,
+        otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS)
+      });
+      return res.status(200).json({ message: "OTP resent successfully." });
+    }
+
     try {
       await resendOtp(normalizedEmail, "signup");
+      // OTP exists and resend succeeded — sync count and expiry to PendingUser
+      await PendingUser.findByIdAndUpdate(pendingUser._id, {
+        $inc: { resendCount: 1 },
+        otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS)
+      });
+
     } catch (resendError) {
+
       if (resendError.message === "RESEND_LIMIT_REACHED") {
         return res.status(429).json({ message: "Maximum resend attempts reached. Please wait until the OTP expires." });
       }
@@ -181,9 +243,13 @@ exports.resendEmailOtp = async (req, res) => {
         return res.status(429).json({ message: "Please wait 60 seconds before requesting another OTP." });
       }
 
-      // OTP no longer exists — create fresh OTP without resetting pending user
       if (resendError.message === "OTP_EXPIRED") {
-        await createOtp(normalizedEmail, "signup");
+        // OTP deleted due to max attempts — carry count and expiry forward
+        await createOtp(normalizedEmail, "signup", currentResendCount + 1);
+        await PendingUser.findByIdAndUpdate(pendingUser._id, {
+          $inc: { resendCount: 1 },
+          otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS)
+        });
         return res.status(200).json({ message: "OTP resent successfully." });
       }
 
@@ -207,7 +273,6 @@ exports.refreshAccessToken = async (req, res) => {
       return res.status(401).json({ message: "Refresh token required" });
     }
 
-    // Verify signature and expiry
     let decoded;
     try {
       decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);

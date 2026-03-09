@@ -33,7 +33,10 @@ const pendingUserSchema = new mongoose.Schema(
     password: { type: String, required: true, minlength: 8 }, // already hashed
     phone: { type: String, default: null },
     role: { type: String, enum: ["user", "admin"], default: "user" },
-    expiresAt: { type: Date, default: () => new Date(Date.now() + 24 * 60 * 60 * 1000) }
+    expiresAt: { type: Date, default: () => new Date(Date.now() + 24 * 60 * 60 * 1000) },
+    resendCount: { type: Number, default: 0 },
+    otpExhausted: { type: Boolean, default: false },  // ← true when OTP deleted by max attempts
+    otpExpiresAt: { type: Date, default: null }        // ← tracks OTP expiry even after OTP deleted
   },
   { timestamps: true }
 );
