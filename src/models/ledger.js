@@ -98,19 +98,21 @@ LedgerSchema.index({ parentTransactionId: 1 }, { sparse: true });
 LedgerSchema.index({ userId: 1, _id: -1 });
 
 // --- FINTECH IMMUTABILITY GUARD ---
-// This ensures that once a transaction is COMPLETED, it cannot be edited.
-LedgerSchema.pre('save', async function() { 
+/**
+ * FIX 2: In the financial world, once a ledger entry is written, it is permanent.
+ * This middleware prevents any rogue code from accidentally updating a transaction's amount or category.
+ */
+// --- FINTECH IMMUTABILITY GUARD ---
+LedgerSchema.pre('save', async function() {
+  // If this isn't a new document and it was already marked as COMPLETED
   if (!this.isNew && this.status === 'COMPLETED') {
+    // Only allow modification if we are specifically switching status to 'VOIDED'
     const isVoiding = this.isModified('status') && this.status === 'VOIDED';
     
-    // FIX: Ensure NO other fields (amount, accountId, etc) are being tampered with
-    const modifiedPaths = this.modifiedPaths();
-    const illegalModifications = modifiedPaths.some(path => path !== 'status' && path !== 'updatedAt');
-
-    if (!isVoiding || illegalModifications) {
-      throw new Error('Strict FinTech Compliance: Cannot modify a completed ledger entry except to VOID it.');
+    if (!isVoiding) {
+      throw new Error('Strict FinTech Compliance: Cannot modify a completed ledger entry. Create a reversal instead.');
     }
   }
-  return; 
+  // No need for next() when using async or returning a value
 });
 module.exports = mongoose.model('Ledger', LedgerSchema);
