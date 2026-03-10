@@ -1,98 +1,95 @@
 const mongoose = require('mongoose');
 const Ledger = require('../models/Ledger');
-const Goal = require('../models/Goal');
+const Account = require('../models/Account');
 
 exports.getAnalyticsDashboard = async (req, res) => {
   try {
     const userId = new mongoose.Types.ObjectId(req.user.id);
-    const { accountType } = req.query; // 'CASH', 'BANK', or 'All'
+    const { accountId, timeframe } = req.query; // timeframe: 'week' or 'month'
 
-    // --- 1. Filter Setup ---
-    const matchStage = { userId, status: 'COMPLETED' };
-    
-    // If user selects "Cash" in Flutter, we filter here
-    if (accountType && accountType !== 'All') {
-      matchStage.accountType = accountType.toUpperCase();
+    // --- 1. Calculate Date Range ---
+    const now = new Date();
+    let startDate;
+
+    if (timeframe === 'week') {
+      // Start of current week (Sunday)
+      startDate = new Date(now.setDate(now.getDate() - now.getDay()));
+      startDate.setHours(0, 0, 0, 0);
+    } else {
+      // Start of current month
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
     }
 
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+    // --- 2. Build Dynamic Match Stage ---
+    const matchStage = { 
+      userId, 
+      status: 'COMPLETED', 
+      createdAt: { $gte: startDate },
+      // Important: Exclude internal goal movements from Income/Expense totals
+      direction: 'NORMAL' 
+    };
 
-    // --- 2. Parallel Aggregations ---
-    const [summary, topCategories, monthlyTrend, debts, goals] = await Promise.all([
-      
-      // A. Income vs Expense (Donut Chart Data)
+    // Filter by specific account if provided and not "all"
+    if (accountId && accountId !== 'all') {
+      matchStage.accountId = new mongoose.Types.ObjectId(accountId);
+    }
+
+    // --- 3. Run Aggregations in Parallel ---
+    const [cashflow, categorySpending, accountData] = await Promise.all([
+      // A. Total Income vs Total Expense
       Ledger.aggregate([
-        { $match: { ...matchStage, createdAt: { $gte: startOfMonth } } },
+        { $match: matchStage },
         { $group: { _id: '$transactionType', total: { $sum: '$amount' } } }
       ]),
 
-      // B. Top 4 Categories (Bar Chart Data)
+      // B. Category-wise Spending (Expenses Only)
       Ledger.aggregate([
-        { $match: { ...matchStage, transactionType: 'EXPENSE', createdAt: { $gte: startOfMonth } } },
-        { $group: { _id: '$category', total: { $sum: '$amount' } } },
-        { $sort: { total: -1 } },
-        { $limit: 4 }
+        { $match: { ...matchStage, transactionType: 'EXPENSE' } },
+        { $group: { _id: '$category', amount: { $sum: '$amount' } } },
+        { $sort: { amount: -1 } }
       ]),
 
-      // C. 6-Month Trend (Line Chart Data)
-      Ledger.aggregate([
-        { $match: { ...matchStage, createdAt: { $gte: sixMonthsAgo } } },
-        {
-          $group: {
-            _id: {
-              year: { $year: '$createdAt' },
-              month: { $month: '$createdAt' },
-              type: '$transactionType'
-            },
-            total: { $sum: '$amount' }
-          }
+      // C. Reserved Balance (Current snapshot, not date-dependent)
+      Account.aggregate([
+        { 
+          $match: (accountId && accountId !== 'all') 
+            ? { _id: new mongoose.Types.ObjectId(accountId) } 
+            : { userId, status: 'ACTIVE' } 
         },
-        { $sort: { '_id.year': 1, '_id.month': 1 } }
-      ]),
-
-      // D. Debt Totals
-      Ledger.aggregate([
-        { $match: { userId, transactionType: 'DEBT_MANAGEMENT' } },
-        { $group: { _id: '$direction', total: { $sum: '$amount' } } }
-      ]),
-
-      // E. Goals List
-      Goal.find({ userId, status: 'active' }).select('title targetAmount currentAmount')
+        { $group: { _id: null, totalReserved: { $sum: '$reservedBalance' } } }
+      ])
     ]);
 
-    // --- 3. Data Formatting ---
-    const income = summary.find(s => s._id === 'INCOME')?.total || 0;
-    const expense = summary.find(s => s._id === 'EXPENSE')?.total || 0;
+    // --- 4. Format Data for Pie Chart & UI ---
+    // Note: Use .toString() or parseFloat because Decimal128 is an object
+    const income = cashflow.find(c => c._id === 'INCOME')?.total?.toString() || "0.00";
+    const expense = cashflow.find(c => c._id === 'EXPENSE')?.total?.toString() || "0.00";
+    const reserved = accountData[0]?.totalReserved?.toString() || "0.00";
 
     res.status(200).json({
       success: true,
       data: {
+        period: timeframe === 'week' ? 'This Week' : 'This Month',
+        // 🎯 Ready for Flutter Pie Chart
+        pieChart: [
+          { label: 'Income', value: parseFloat(income), color: '#4CAF50' },
+          { label: 'Expense', value: Math.abs(parseFloat(expense)), color: '#F44336' },
+          { label: 'Reserved', value: parseFloat(reserved), color: '#FF9800' }
+        ],
+        // 🎯 Category List
+        categorySpending: categorySpending.map(c => ({
+          category: c._id,
+          amount: Math.abs(parseFloat(c.amount.toString()))
+        })),
         summary: {
           income,
-          expense: Math.abs(expense),
-          net: income - Math.abs(expense)
-        },
-        topCategories: topCategories.map(c => ({ 
-          category: c._id, 
-          amount: Math.abs(c.total) 
-        })),
-        monthlyTrend: monthlyTrend.map(t => ({
-          month: t._id.month,
-          type: t._id.type,
-          amount: Math.abs(t.total)
-        })),
-        debts: {
-          toReceive: debts.find(d => d._id === 'DEBIT')?.total || 0,
-          toPay: debts.find(d => d._id === 'CREDIT')?.total || 0,
-        },
-        goals: goals.map(g => ({
-          title: g.title,
-          progress: (g.currentAmount / g.targetAmount) * 100
-        }))
+          expense: Math.abs(parseFloat(expense)).toFixed(2),
+          reserved,
+          net: (parseFloat(income) - Math.abs(parseFloat(expense))).toFixed(2)
+        }
       }
     });
+
   } catch (error) {
     console.error("Analytics Error:", error);
     res.status(500).json({ success: false, message: "Internal Server Error" });
