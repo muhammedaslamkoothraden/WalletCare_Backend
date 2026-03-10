@@ -64,26 +64,48 @@ exports.createGoal = async (req, res) => {
   }
 };
 
-
-
+// GET GOALS WITH PAGINATION & FILTERING 
 exports.getGoals = async (req, res) => {
   try {
-    const { page = 1, limit = 10, status } = req.query;
 
-    const query = { userId: req.user.id };
+    // pagination values
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
 
-    if (status) query.status = status;
+    // filtering
+    const filter = { userId: req.user.id };
 
-    const goals = await Goal.find(query)
+    if (req.query.status) {
+      filter.status = req.query.status;
+    }
+    if (req.query.category) {
+      filter.category = req.query.category;
+    }
+
+    // count total goals
+    const totalGoals = await Goal.countDocuments(filter);
+
+    // fetch goals with pagination
+    const goals = await Goal.find(filter)
       .skip((page - 1) * limit)
-      .limit(parseInt(limit))
+      .limit(limit)
       .sort({ targetDate: 1 });
 
+    // calculate progress, remaining etc
     const goalsWithDetails = calculateGoalDetails(goals);
 
     res.status(200).json({
       success: true,
+
+      pagination: {
+        page,
+        limit,
+        totalGoals,
+        totalPages: Math.ceil(totalGoals / limit)
+      },
+
       data: goalsWithDetails
+
     });
 
   } catch (error) {
@@ -93,7 +115,6 @@ exports.getGoals = async (req, res) => {
     });
   }
 };
-
 
 
 exports.updateGoal = async (req, res) => {
@@ -390,7 +411,7 @@ exports.depositToGoal = async (req, res) => {
       userId: req.user.id,
       accountId: account._id,
       amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)),
-      transactionType: "EXPENSE",
+      transactionType: goal.transactionType,
       direction: "GOAL_ALLOCATION",
       category: "Goal",
       description: `Deposit to goal: ${goal.title}`,
@@ -501,6 +522,178 @@ exports.withdrawFromGoal = async (req, res) => {
     session.endSession();
 
     res.status(400).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// ANALYTICS: GOAL PROGRESS
+exports.getGoalProgressAnalytics = async (req, res) => {
+  try {
+
+    const analytics = await Goal.aggregate([
+      {
+        $match: { userId: req.user.id }
+      },
+      {
+        $group: {
+          _id: null,
+          totalGoals: { $sum: 1 },
+
+          completedGoals: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "completed"] }, 1, 0]
+            }
+          },
+
+          activeGoals: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "active"] }, 1, 0]
+            }
+          },
+
+          overdueGoals: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "overdue"] }, 1, 0]
+            }
+          },
+
+          averageProgress: {
+            $avg: {
+              $multiply: [
+                { $divide: ["$currentAmount", "$targetAmount"] },
+                100
+              ]
+            }
+          }
+        }
+      }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: analytics[0] || {}
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// ANALYTICS: GOAL CATEGORY STATS
+exports.getGoalCategoryStats = async (req, res) => {
+  try {
+
+    const stats = await Goal.aggregate([
+      {
+        $match: { userId: req.user.id }
+      },
+      {
+        $group: {
+          _id: "$category",
+          count: { $sum: 1 },
+          totalTarget: { $sum: "$targetAmount" }
+        }
+      },
+      {
+        $sort: { count: -1 }
+      }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: stats
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+// ANALYTICS: MONTHLY GOAL SAVINGS
+exports.getMonthlyGoalSavings = async (req, res) => {
+  try {
+
+    const stats = await Goal.aggregate([
+      {
+        $match: { userId: req.user.id }
+      },
+      {
+        $project: {
+          month: { $month: "$createdAt" },
+          currentAmount: 1
+        }
+      },
+      {
+        $group: {
+          _id: "$month",
+          totalSaved: { $sum: "$currentAmount" }
+        }
+      },
+      {
+        $sort: { _id: 1 }
+      }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: stats
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+// GOAL PREDICTION
+exports.getGoalPrediction = async (req, res) => {
+  try {
+
+    const goals = await Goal.find({
+      userId: req.user.id,
+      status: "active"
+    });
+
+    const predictions = goals.map(goal => {
+
+      const remainingAmount =
+        goal.targetAmount - goal.currentAmount;
+
+      const today = new Date();
+
+      const remainingDays =
+        Math.ceil((goal.targetDate - today) /
+        (1000 * 60 * 60 * 24));
+
+      const requiredDailySaving =
+        remainingDays > 0
+          ? remainingAmount / remainingDays
+          : remainingAmount;
+
+      return {
+        goalId: goal._id,
+        title: goal.title,
+        remainingAmount,
+        remainingDays,
+        requiredDailySaving
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      data: predictions
+    });
+
+  } catch (error) {
+    res.status(500).json({
       success: false,
       message: error.message
     });

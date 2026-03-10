@@ -19,6 +19,11 @@ const goalSchema = new mongoose.Schema(
       ref: "Account",
       required: true
     },
+    transactionType: {
+      type: String,
+      enum: ["expense", "reserved"],
+      default: "reserved"
+    },
 
     category: {
       type: String,
@@ -52,14 +57,21 @@ const goalSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["active", "completed"],
+      enum: ["active", "completed", "overdue"],
       default: "active",
     },
+    reminderFrequency: {
+      type: String,
+      enum: ["daily", "weekly", "monthly", "none"],
+      default: "weekly"
+    }
   },
   { timestamps: true }
-  
+
 );
 goalSchema.index({ userId: 1, status: 1 });
 goalSchema.index({ userId: 1, targetDate: 1 });
+
+
 
 module.exports = mongoose.models.Goal || mongoose.model("Goal", goalSchema);

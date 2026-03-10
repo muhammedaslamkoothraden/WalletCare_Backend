@@ -1,4 +1,5 @@
 const express = require("express");
+const goalLimiter = require("../middlewares/rateLimiter");
 const router = express.Router();
 const authMiddleware = require("../middlewares/auth");
 
@@ -9,17 +10,25 @@ const {
   deleteGoal,
   getGoalSummary,
   depositToGoal,   
-  withdrawFromGoal
+  withdrawFromGoal,
+  getGoalProgressAnalytics,
+  getGoalCategoryStats,
+  getMonthlyGoalSavings,
+  getGoalPrediction
 } = require("../controllers/goal.controller");
 
 
 // Protect all routes
-router.post("/", authMiddleware, createGoal);
-router.get("/", authMiddleware, getGoals);
+router.post("/", authMiddleware, goalLimiter, createGoal);
+router.get("/", authMiddleware, goalLimiter, getGoals);
 router.get("/summary", authMiddleware, getGoalSummary);
 router.post("/:id/deposit", authMiddleware, depositToGoal);
 router.post("/:id/withdraw", authMiddleware, withdrawFromGoal);
 router.put("/:id", authMiddleware, updateGoal);
 router.delete("/:id", authMiddleware, deleteGoal);
+router.get("/analytics/progress",authMiddleware,getGoalProgressAnalytics);
+router.get("/analytics/category",authMiddleware,getGoalCategoryStats);
+router.get("/analytics/monthly",authMiddleware,getMonthlyGoalSavings);
+router.get("/analytics/prediction",authMiddleware,getGoalPrediction);
 
 module.exports = router;
