@@ -3,8 +3,7 @@ const Account = require("../models/Account");
 const Ledger = require('../models/Ledger');
 const idempotencyKey = new mongoose.Types.ObjectId().toString();
 const {
-  calculateGoalDetails,
-  calculateSummary
+  calculateGoalDetails
 } = require("../services/goal.service");
 const Goal = require('../models/Goal');
 // CREATE GOAL
@@ -214,7 +213,7 @@ exports.updateGoal = async (req, res) => {
   }
 };
 
-
+//goal summary 
 exports.getGoalSummary = async (req, res) => {
   try {
 
@@ -256,7 +255,7 @@ exports.getGoalSummary = async (req, res) => {
 };
 
 
-
+//delete goal and unlock reserved money
 exports.deleteGoal = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -390,11 +389,37 @@ exports.depositToGoal = async (req, res) => {
 
     await account.save({ session });
 
-    // ✅ UPDATE GOAL
+    // goal completion 
     goal.currentAmount += amount;
 
+    let isCompleted = false;
+
     if (goal.currentAmount >= goal.targetAmount) {
+
       goal.status = "completed";
+      isCompleted = true;
+
+      const reserved = parseFloat(account.reservedBalance.toString());
+
+      // Reduce reserved balance because money is now spent
+      account.reservedBalance = mongoose.Types.Decimal128.fromString(
+        (reserved - goal.targetAmount).toFixed(2)
+      );
+
+      await account.save({ session });
+
+      // Create expense ledger entry for goal completion
+      await Ledger.create([{
+        userId: req.user.id,
+        accountId: account._id,
+        amount: mongoose.Types.Decimal128.fromString(goal.targetAmount.toFixed(2)),
+        transactionType: "EXPENSE",
+        direction: "GOAL_COMPLETION",
+        category: "Goal",
+        description: `Goal completed: ${goal.title}`,
+        idempotencyKey: new mongoose.Types.ObjectId().toString()
+      }], { session });
+
     }
 
     await goal.save({ session });
@@ -406,12 +431,12 @@ exports.depositToGoal = async (req, res) => {
       throw new Error("Duplicate request");
     }
 
-    // ✅ CREATE LEDGER ENTRY
+    // ✅ CREATE LEDGER ENTRY DEPOSITING TO GOAL
     await Ledger.create([{
       userId: req.user.id,
       accountId: account._id,
       amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)),
-      transactionType: goal.transactionType,
+      transactionType:"EXPENSE",
       direction: "GOAL_ALLOCATION",
       category: "Goal",
       description: `Deposit to goal: ${goal.title}`,
@@ -528,131 +553,6 @@ exports.withdrawFromGoal = async (req, res) => {
   }
 };
 
-// ANALYTICS: GOAL PROGRESS
-exports.getGoalProgressAnalytics = async (req, res) => {
-  try {
-
-    const analytics = await Goal.aggregate([
-      {
-        $match: { userId: req.user.id }
-      },
-      {
-        $group: {
-          _id: null,
-          totalGoals: { $sum: 1 },
-
-          completedGoals: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "completed"] }, 1, 0]
-            }
-          },
-
-          activeGoals: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "active"] }, 1, 0]
-            }
-          },
-
-          overdueGoals: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "overdue"] }, 1, 0]
-            }
-          },
-
-          averageProgress: {
-            $avg: {
-              $multiply: [
-                { $divide: ["$currentAmount", "$targetAmount"] },
-                100
-              ]
-            }
-          }
-        }
-      }
-    ]);
-
-    res.status(200).json({
-      success: true,
-      data: analytics[0] || {}
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
-
-// ANALYTICS: GOAL CATEGORY STATS
-exports.getGoalCategoryStats = async (req, res) => {
-  try {
-
-    const stats = await Goal.aggregate([
-      {
-        $match: { userId: req.user.id }
-      },
-      {
-        $group: {
-          _id: "$category",
-          count: { $sum: 1 },
-          totalTarget: { $sum: "$targetAmount" }
-        }
-      },
-      {
-        $sort: { count: -1 }
-      }
-    ]);
-
-    res.status(200).json({
-      success: true,
-      data: stats
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
-// ANALYTICS: MONTHLY GOAL SAVINGS
-exports.getMonthlyGoalSavings = async (req, res) => {
-  try {
-
-    const stats = await Goal.aggregate([
-      {
-        $match: { userId: req.user.id }
-      },
-      {
-        $project: {
-          month: { $month: "$createdAt" },
-          currentAmount: 1
-        }
-      },
-      {
-        $group: {
-          _id: "$month",
-          totalSaved: { $sum: "$currentAmount" }
-        }
-      },
-      {
-        $sort: { _id: 1 }
-      }
-    ]);
-
-    res.status(200).json({
-      success: true,
-      data: stats
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
 // GOAL PREDICTION
 exports.getGoalPrediction = async (req, res) => {
   try {
@@ -671,7 +571,7 @@ exports.getGoalPrediction = async (req, res) => {
 
       const remainingDays =
         Math.ceil((goal.targetDate - today) /
-        (1000 * 60 * 60 * 24));
+          (1000 * 60 * 60 * 24));
 
       const requiredDailySaving =
         remainingDays > 0

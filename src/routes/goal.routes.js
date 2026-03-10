@@ -26,9 +26,6 @@ router.post("/:id/deposit", authMiddleware, depositToGoal);
 router.post("/:id/withdraw", authMiddleware, withdrawFromGoal);
 router.put("/:id", authMiddleware, updateGoal);
 router.delete("/:id", authMiddleware, deleteGoal);
-router.get("/analytics/progress",authMiddleware,getGoalProgressAnalytics);
-router.get("/analytics/category",authMiddleware,getGoalCategoryStats);
-router.get("/analytics/monthly",authMiddleware,getMonthlyGoalSavings);
 router.get("/analytics/prediction",authMiddleware,getGoalPrediction);
 
 module.exports = router;

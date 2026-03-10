@@ -8,7 +8,7 @@ const AccountRoutes = require("./routes/Account.routes");
 const transactionRoutes = require("./routes/transaction.routes");
 const authRoutes = require("./routes/auth.routes");
 const goalRoutes = require("./routes/goal.routes");
-const analyticsRoutes = require("./routes/analytics");
+const analyticsRoutes = require("./routes/analytics.routes");
 
 const authMiddleware = require("./middlewares/auth");
 const notificationRoutes = require("./routes/notification.routes");
@@ -28,6 +28,7 @@ app.use("/api/transaction", transactionRoutes);
 app.use("/api/goals", authMiddleware, goalRoutes);
 app.use("/notifications", notificationRoutes);
 app.use("/api/analytics", analyticsRoutes);
+
 
 
 // Health check

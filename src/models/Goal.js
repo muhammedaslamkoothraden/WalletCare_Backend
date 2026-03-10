@@ -22,7 +22,12 @@ const goalSchema = new mongoose.Schema(
     transactionType: {
       type: String,
       enum: ["expense", "reserved"],
-      default: "reserved"
+      default: "expense"
+    },
+    directiontype: {
+      type: String,
+      enum: ["NORMAL", "GOAL_ALLOCATION", "GOAL_DEALLOCATION"],
+      default: "NORMAL"
     },
 
     category: {

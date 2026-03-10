@@ -1,6 +1,8 @@
 const mongoose = require('mongoose');
 const Ledger = require('../models/Ledger');
 const Account = require('../models/Account');
+const Goal = require('../models/Goal');
+
 
 exports.getAnalyticsDashboard = async (req, res) => {
   try {
@@ -93,5 +95,135 @@ exports.getAnalyticsDashboard = async (req, res) => {
   } catch (error) {
     console.error("Analytics Error:", error);
     res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+};
+
+
+
+
+// ANALYTICS: GOAL PROGRESS
+exports.getGoalProgressAnalytics = async (req, res) => {
+  try {
+
+    const analytics = await Goal.aggregate([
+      {
+        $match: { userId: req.user.id }
+      },
+      {
+        $group: {
+          _id: null,
+          totalGoals: { $sum: 1 },
+
+          completedGoals: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "completed"] }, 1, 0]
+            }
+          },
+
+          activeGoals: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "active"] }, 1, 0]
+            }
+          },
+
+          overdueGoals: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "overdue"] }, 1, 0]
+            }
+          },
+
+          averageProgress: {
+            $avg: {
+              $multiply: [
+                { $divide: ["$currentAmount", "$targetAmount"] },
+                100
+              ]
+            }
+          }
+        }
+      }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: analytics[0] || {}
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+
+// ANALYTICS: GOAL CATEGORY STATS
+exports.getGoalCategoryStats = async (req, res) => {
+  try {
+
+    const stats = await Goal.aggregate([
+      {
+        $match: { userId: req.user.id }
+      },
+      {
+        $group: {
+          _id: "$category",
+          count: { $sum: 1 },
+          totalTarget: { $sum: "$targetAmount" }
+        }
+      },
+      {
+        $sort: { count: -1 }
+      }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: stats
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+// ANALYTICS: MONTHLY GOAL SAVINGS
+exports.getMonthlyGoalSavings = async (req, res) => {
+  try {
+
+    const stats = await Goal.aggregate([
+      {
+        $match: { userId: req.user.id }
+      },
+      {
+        $project: {
+          month: { $month: "$createdAt" },
+          currentAmount: 1
+        }
+      },
+      {
+        $group: {
+          _id: "$month",
+          totalSaved: { $sum: "$currentAmount" }
+        }
+      },
+      {
+        $sort: { _id: 1 }
+      }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: stats
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
 };
