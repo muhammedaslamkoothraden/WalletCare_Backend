@@ -10,7 +10,7 @@ const userSchema = new mongoose.Schema(
     isPremium: { type: Boolean, default: false },
     role: { type: String, enum: ["user", "admin"], default: "user" },
     isEmailVerified: { type: Boolean, default: false },
-    refreshToken: { type: String, default: null, select: false },
+    refreshToken: { type: String, default: null },
   },
   { timestamps: true }
 );

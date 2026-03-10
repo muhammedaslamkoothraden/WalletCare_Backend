@@ -2,15 +2,12 @@ const { User, PendingUser } = require("../models/user");
 const Otp = require("../models/otp");
 const { createOtp, resendOtp } = require("../services/otp.service");
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-const crypto = require("crypto");
+
+const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require("../utils/token");
+const hashToken = require("../utils/hashToken");
 
 const OTP_EXPIRY_MS = 10 * 60 * 1000;
 
-// SHA-256 hash for refresh tokens — deterministic, allows atomic DB lookup
-function hashToken(token) {
-  return crypto.createHash("sha256").update(token).digest("hex");
-}
 
 // Register
 exports.registerUser = async (req, res) => {
@@ -36,6 +33,31 @@ exports.registerUser = async (req, res) => {
     const existingPending = await PendingUser.findOne({ email: normalizedEmail });
 
     if (existingPending) {
+
+      // Check resend limit before doing anything
+      if (existingPending.resendCount >= 5) {
+        if (existingPending.otpExhausted) {
+          const now = new Date();
+          const expiresAt = existingPending.otpExpiresAt;
+
+          if (expiresAt && expiresAt > now) {
+            // OTP deleted by max attempts and wait time not over
+            const secondsLeft = Math.ceil((expiresAt - now) / 1000);
+            const minutesLeft = Math.ceil(secondsLeft / 60);
+            return res.status(429).json({
+              message: `Maximum resend attempts reached. Please wait ${minutesLeft} minute(s) until the OTP expires.`,
+              retryAfter: secondsLeft
+            });
+          }
+          // otpExpiresAt passed — fall through and allow fresh start below
+        } else {
+          // OTP still alive — block
+          return res.status(429).json({
+            message: "Maximum resend attempts reached. Please wait until the OTP expires."
+          });
+        }
+      }
+
       // Update pending record with latest submitted data before resending
       const hashedPassword = await bcrypt.hash(password, 10);
       await PendingUser.findOneAndUpdate(
@@ -57,7 +79,11 @@ exports.registerUser = async (req, res) => {
           await createOtp(normalizedEmail, "signup");
           await PendingUser.findOneAndUpdate(
             { email: normalizedEmail },
-            { otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS) }
+            {
+              resendCount: 1,
+              otpExhausted: false,
+              otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS)
+            }
           );
           return res.status(200).json({ message: "A verification OTP has been sent to your email" });
         }
@@ -111,10 +137,10 @@ exports.loginUser = async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Explicitly select password since it is excluded in schema
+    // explicitly select password since it is excluded in schema
     const user = await User.findOne({ email: normalizedEmail }).select("+password");
 
-    // Prevent user enumeration — generic message for missing user
+    // prevent user enumeration — generic message for missing user
     if (!user) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
@@ -128,19 +154,9 @@ exports.loginUser = async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    // Short-lived access token
-    const accessToken = jwt.sign(
-      { userId: user._id, role: user.role },
-      process.env.ACCESS_TOKEN_SECRET,
-      { expiresIn: process.env.ACCESS_TOKEN_EXPIRY }
-    );
-
-    // Long-lived refresh token
-    const refreshToken = jwt.sign(
-      { userId: user._id },
-      process.env.REFRESH_TOKEN_SECRET,
-      { expiresIn: process.env.REFRESH_TOKEN_EXPIRY }
-    );
+    // generate tokens via utils — no raw jwt.sign calls here
+    const accessToken = generateAccessToken(user._id, user.role);
+    const refreshToken = generateRefreshToken(user._id);
 
     // findByIdAndUpdate avoids triggering password re-hash in pre-save hook
     await User.findByIdAndUpdate(user._id, { refreshToken: hashToken(refreshToken) });
@@ -159,9 +175,11 @@ exports.loginUser = async (req, res) => {
     });
 
   } catch (error) {
+    console.error("loginUser error:", error.message);
     return res.status(500).json({ message: "Server error" });
   }
 };
+
 
 // Resend OTP
 exports.resendEmailOtp = async (req, res) => {
@@ -175,8 +193,9 @@ exports.resendEmailOtp = async (req, res) => {
     const normalizedEmail = email.toLowerCase().trim();
 
     const pendingUser = await PendingUser.findOne({ email: normalizedEmail });
+
+    // generic response — never reveal whether email exists
     if (!pendingUser) {
-      // Generic response — never reveal whether email exists
       return res.status(200).json({ message: "If a pending registration exists, a new OTP has been sent." });
     }
 
@@ -193,7 +212,7 @@ exports.resendEmailOtp = async (req, res) => {
           const minutesLeft = Math.ceil(secondsLeft / 60);
           return res.status(429).json({
             message: `Maximum resend attempts reached. Please wait ${minutesLeft} minute(s) until the OTP expires.`,
-            retryAfter:secondsLeft
+            retryAfter: secondsLeft
           });
         }
 
@@ -264,6 +283,7 @@ exports.resendEmailOtp = async (req, res) => {
   }
 };
 
+
 // Refresh Access Token
 exports.refreshAccessToken = async (req, res) => {
   try {
@@ -275,7 +295,7 @@ exports.refreshAccessToken = async (req, res) => {
 
     let decoded;
     try {
-      decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+      decoded = verifyRefreshToken(refreshToken);
     } catch (err) {
       if (err.name === "TokenExpiredError") {
         return res.status(401).json({ message: "Refresh token expired. Please login again." });
@@ -285,14 +305,10 @@ exports.refreshAccessToken = async (req, res) => {
 
     const hashedToken = hashToken(refreshToken);
 
-    // Generate new refresh token before atomic swap
-    const newRefreshToken = jwt.sign(
-      { userId: decoded.userId },
-      process.env.REFRESH_TOKEN_SECRET,
-      { expiresIn: process.env.REFRESH_TOKEN_EXPIRY }
-    );
+    // generate new refresh token before atomic swap
+    const newRefreshToken = generateRefreshToken(decoded.userId);
 
-    // Atomic swap — find by old hash, replace with new hash in one query
+    // atomic swap — find by old hash, replace with new hash in one query
     // prevents replay attack — if already rotated, user will be null
     const user = await User.findOneAndUpdate(
       { _id: decoded.userId, refreshToken: hashedToken },
@@ -301,17 +317,13 @@ exports.refreshAccessToken = async (req, res) => {
     );
 
     if (!user) {
-      // Reuse detected — wipe token from DB and force re-login
+      // reuse detected — wipe token from DB and force re-login
       await User.findByIdAndUpdate(decoded.userId, { refreshToken: null });
       return res.status(401).json({ message: "Refresh token reuse detected. Please login again." });
     }
 
-    // Generate access token using role from DB doc — decoded has no role
-    const newAccessToken = jwt.sign(
-      { userId: user._id, role: user.role },
-      process.env.ACCESS_TOKEN_SECRET,
-      { expiresIn: process.env.ACCESS_TOKEN_EXPIRY }
-    );
+    // generate access token using role from DB doc — decoded has no role
+    const newAccessToken = generateAccessToken(user._id, user.role);
 
     return res.status(200).json({
       accessToken: newAccessToken,
