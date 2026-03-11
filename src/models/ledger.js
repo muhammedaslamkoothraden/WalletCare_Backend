@@ -38,6 +38,7 @@ const LedgerSchema = new mongoose.Schema(
         'DEBIT', 
         'GOAL_ALLOCATION', 
         'GOAL_DEALLOCATION', 
+        'GOAL_COMPLETION',
         'REVERSAL'
       ],
       required: true,
