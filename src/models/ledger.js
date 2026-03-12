@@ -1,5 +1,10 @@
 const mongoose = require('mongoose');
 
+/**
+ * @desc    Immutable Financial Ledger Schema
+ * @notes   Uses an append-only architecture where math (add/subtract) 
+ * is implicitly determined by the transactionType and action.
+ */
 const LedgerSchema = new mongoose.Schema(
   {
     userId: {
@@ -15,45 +20,43 @@ const LedgerSchema = new mongoose.Schema(
       index: true
     },
     accountName: {
-    type: String,
-    required: true,
-    trim: true
-  },
+      type: String,
+      required: true,
+      trim: true
+    },
     amount: {
       type: mongoose.Schema.Types.Decimal128,
-      required: true
+      required: true,
+      min: [0.01, 'Ledger amounts must be absolute positive values']
     },
     transactionType: {
       type: String,
-      // Added 'DEBT_MANAGEMENT' to separate loans/debts from standard Income/Expense
-      enum: ['INCOME', 'EXPENSE', 'TRANSFER', 'REVERSAL', 'DEBT_MANAGEMENT'], 
+      enum: ['INCOME', 'EXPENSE', 'TRANSFER', 'REVERSAL'], 
       required: true,
       uppercase: true
     },
-    direction: {
+    action: {
       type: String,
-      /** * NORMAL: Standard Income/Expense
-       * CREDIT: Money from Creditor (Liability)
-       * DEBIT: Money to Debtor (Asset/Loan Out)
-       * GOAL_*: Internal Reservation logic
-       */
       enum: [
-        'NORMAL', 
-        'CREDIT', 
-        'DEBIT', 
-        'GOAL_ALLOCATION', 
-        'GOAL_DEALLOCATION', 
-        'GOAL_COMPLETION',
-        'REVERSAL'
+        'STANDARD',           // External money movement (In/Out)
+        'GOAL_ALLOCATION',    // Reserve money from available to goal
+        'GOAL_DEALLOCATION',  // Return reserved money to available
+        'GOAL_COMPLETION',    // Spend reserved money for the goal
+        'ACCOUNT_TRANSFER_IN',// Incoming from another wallet
+        'ACCOUNT_TRANSFER_OUT',// Outgoing to another wallet
+        'REVERSAL'            // Explicitly reverses a prior entry
       ],
-      required: true,
+      default: 'STANDARD',
       uppercase: true
+    },
+    linkedAccountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Account',
+      default: null
     },
     idempotencyKey: {
       type: String,
       required: true,
-      // FIX 1: Removed `unique: true` from here to prevent global database conflicts.
-      // Uniqueness is now safely handled by the compound index at the bottom.
       trim: true
     },
     parentTransactionId: {
@@ -62,7 +65,7 @@ const LedgerSchema = new mongoose.Schema(
       default: null
     },
     partyName: {
-      type: String, // e.g., "Bank of America" or "John Doe"
+      type: String,
       trim: true 
     },
     category: {
@@ -87,38 +90,35 @@ const LedgerSchema = new mongoose.Schema(
   }
 );
 
-// --- Strategic Indexing ---
-
-// 1. Prevent Double Processing (UserId + Key)
-// This perfectly ensures a single user cannot reuse an idempotency key.
+// Prevents duplicate processing via unique key per user [cite: 21]
 LedgerSchema.index({ userId: 1, idempotencyKey: 1 }, { unique: true });
 
-// 2. High-Performance Filtering (The "Advanced Filter" Index)
-// This covers filtering by Account, Direction, and Type for the history feed
-LedgerSchema.index({ accountId: 1, direction: 1, transactionType: 1, createdAt: -1 });
+// Optimizes dashboard feeds and history lookups [cite: 21]
+LedgerSchema.index({ accountId: 1, transactionType: 1, action: 1, createdAt: -1 });
 
-// 3. Reversal Lookups (Sparse index ignores nulls to save space)
+// Supports quick lookups for cancellation/reversal history [cite: 21, 137]
 LedgerSchema.index({ parentTransactionId: 1 }, { sparse: true });
 
-// 4. Global User History Keyset Pagination
+// High-performance keyset pagination for history [cite: 21]
 LedgerSchema.index({ userId: 1, _id: -1 });
 
-// --- FINTECH IMMUTABILITY GUARD ---
-/**
- * FIX 2: In the financial world, once a ledger entry is written, it is permanent.
- * This middleware prevents any rogue code from accidentally updating a transaction's amount or category.
- */
-// --- FINTECH IMMUTABILITY GUARD ---
-LedgerSchema.pre('save', async function() {
-  // If this isn't a new document and it was already marked as COMPLETED
+// FinTech Immutability Guard: Prevents modification of completed records 
+LedgerSchema.pre('save', function() {
   if (!this.isNew && this.status === 'COMPLETED') {
-    // Only allow modification if we are specifically switching status to 'VOIDED'
     const isVoiding = this.isModified('status') && this.status === 'VOIDED';
     
     if (!isVoiding) {
-      throw new Error('Strict FinTech Compliance: Cannot modify a completed ledger entry. Create a reversal instead.');
+      throw new Error('Strict Compliance: Cannot modify a completed ledger entry.');
     }
   }
-  // No need for next() when using async or returning a value
 });
+
+// Blocks standard Mongoose update methods from bypassing logic [cite: 136]
+LedgerSchema.pre(['updateOne', 'findOneAndUpdate', 'updateMany'], function() {
+  const update = this.getUpdate();
+  if (update.$set && (update.$set.amount || update.$set.category)) {
+     throw new Error('Strict Compliance: Protected ledger fields cannot be updated.');
+  }
+});
+
 module.exports = mongoose.model('Ledger', LedgerSchema);
