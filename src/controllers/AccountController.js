@@ -128,4 +128,16 @@ exports.createAccount = async (req, res) => {
     console.error('CREATE_ACCOUNT_ERROR:', error);
     res.status(500).json({ error: 'Could not create account' });
   }
+
+};
+  exports.setAccountAsDefault = async (req, res) => {
+  const { accountId } = req.params;
+  const { userId } = req.user; // From your auth middleware
+
+  // 1. Set all user's accounts to isDefault: false
+  await Account.updateMany({ userId }, { isDefault: false });
+  // 2. Set the chosen one to true
+  await Account.findByIdAndUpdate(accountId, { isDefault: true });
+
+  res.status(200).json({ success: true });
 };
