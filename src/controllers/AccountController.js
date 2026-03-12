@@ -3,7 +3,8 @@ const Decimal = require('decimal.js');
 const Account = require('../models/Account');
 
 /**
- * @description Retrieves balances and calculates Net Worth on-the-fly.
+ * @desc    Fetch user balances and global summary
+ * @route   GET /api/v1/accounts/:userId
  */
 exports.getAccountBalances = async (req, res) => {
   try {
@@ -11,19 +12,19 @@ exports.getAccountBalances = async (req, res) => {
     const { accountId, type } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ error: 'Valid UserId is required' });
+      return res.status(400).json({ success: false, error: 'Valid UserId is required' });
     }
 
-    const query = { userId, status: { $in: ['ACTIVE', 'FROZEN'] } };
+    const query = { userId, status: { $ne: 'CLOSED' } };
     if (accountId) query._id = accountId;
     
     if (type && type.toUpperCase() !== 'ALL') {
-      query.type = new RegExp(`^${type.trim()}$`, 'i'); 
+      query.type = type.toUpperCase();
     }
 
-    const accounts = await Account.find(query);
+    const accounts = await Account.find(query).lean();
 
-    let totals = {
+    const totals = {
       available: new Decimal(0),
       reserved: new Decimal(0),
       netWorth: new Decimal(0)
@@ -54,22 +55,23 @@ exports.getAccountBalances = async (req, res) => {
     return res.status(200).json({
       success: true,
       timestamp: new Date().toISOString(),
-      accounts: formattedAccounts,
       globalSummary: {
         totalAvailable: totals.available.toFixed(2),
         totalReserved: totals.reserved.toFixed(2),
         netWorth: totals.netWorth.toFixed(2)
-      }
+      },
+      accounts: formattedAccounts
     });
 
   } catch (error) {
-    console.error('FETCH_BALANCES_ERROR:', error);
-    return res.status(500).json({ error: 'Internal Server Error' });
+    console.error('FETCH_BALANCES_ERROR:', error.message);
+    return res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
 };
 
 /**
- * @description Creates a new account with smart default logic.
+ * @desc    Create a new wallet/account
+ * @route   POST /api/v1/accounts
  */
 exports.createAccount = async (req, res) => {
   try {
@@ -77,11 +79,13 @@ exports.createAccount = async (req, res) => {
     const cleanType = type?.toUpperCase();
 
     if (!['CASH', 'BANK'].includes(cleanType)) {
-      return res.status(400).json({ error: 'Invalid type. Must be CASH or BANK' });
+      return res.status(400).json({ success: false, error: 'Type must be CASH or BANK' });
     }
 
     const existingCount = await Account.countDocuments({ userId, status: { $ne: 'CLOSED' } });
-    const isDefault = existingCount === 0 || cleanType === 'CASH';
+    
+    // First account is default, or any account explicitly named/typed as primary logic
+    const isDefault = existingCount === 0;
 
     if (isDefault) {
       await Account.updateMany({ userId }, { isDefault: false });
@@ -98,38 +102,47 @@ exports.createAccount = async (req, res) => {
     return res.status(201).json({ success: true, data: newAccount });
 
   } catch (error) {
-    console.error('CREATE_ACCOUNT_ERROR:', error);
-    res.status(500).json({ error: 'Could not create account' });
+    console.error('CREATE_ACCOUNT_ERROR:', error.message);
+    return res.status(500).json({ success: false, error: 'Account creation failed' });
   }
 };
 
 /**
- * @description Sets one account as primary and unsets all others.
+ * @desc    Set primary account for the user
+ * @route   PATCH /api/v1/accounts/:accountId/default
  */
 exports.setAccountAsDefault = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { accountId } = req.params;
-    const userId = req.user?.id || req.body.userId; // Ensure userId is available
+    const userId = req.user?.id || req.body.userId;
 
-    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!userId) {
+      return res.status(401).json({ success: false, error: "Authentication required" });
+    }
 
-    // 1. Reset all user's accounts to isDefault: false
-    await Account.updateMany({ userId }, { isDefault: false });
+    await Account.updateMany({ userId }, { isDefault: false }).session(session);
 
-    // 2. Set chosen account to true (Security: check both ID and Owner)
     const updated = await Account.findOneAndUpdate(
       { _id: accountId, userId }, 
       { isDefault: true },
-      { new: true }
+      { new: true, session }
     );
 
     if (!updated) {
-      return res.status(404).json({ error: "Account not found or access denied" });
+      throw new Error("Account not found or access denied");
     }
 
+    await session.commitTransaction();
     res.status(200).json({ success: true, message: "Primary account updated" });
+
   } catch (error) {
-    console.error('SET_DEFAULT_ERROR:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    await session.abortTransaction();
+    console.error('SET_DEFAULT_ERROR:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    session.endSession();
   }
 };
