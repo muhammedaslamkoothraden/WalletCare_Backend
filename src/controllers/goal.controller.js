@@ -358,3 +358,29 @@ exports.getAccountGoalTransitions = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// SHARING GOAL WITH ANOTHER USER
+exports.shareGoal =
+async (req, res) => {
+
+  const { id } = req.params;
+  const { userId } = req.body;
+
+  const goal = await Goal.findById(id);
+
+  if (!goal) {
+    return res.status(404).json({
+      message: "Goal not found"
+    });
+  }
+
+  goal.sharedWith.push(userId);
+
+  await goal.save();
+
+  res.json({
+    success: true,
+    message: "Goal shared successfully"
+  });
+
+};

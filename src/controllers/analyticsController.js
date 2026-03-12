@@ -4,6 +4,7 @@ const Account = require('../models/Account');
 const Goal = require('../models/Goal');
 
 
+
 exports.getAnalyticsDashboard = async (req, res) => {
   try {
     const userId = new mongoose.Types.ObjectId(req.user.id);
@@ -226,4 +227,142 @@ exports.getMonthlyGoalSavings = async (req, res) => {
       message: error.message
     });
   }
+};
+
+// ANALYTICS: GOAL PROGRESS DISTRIBUTION
+exports.goalProgressDistribution =
+async (req, res) => {
+
+  const stats =
+  await Goal.aggregate([
+
+    {
+      $match: {
+        userId: req.user.id
+      }
+    },
+
+    {
+      $project: {
+
+        progress: {
+          $multiply: [
+            {
+              $divide: [
+                "$currentAmount",
+                "$targetAmount"
+              ]
+            },
+            100
+          ]
+        }
+
+      }
+    },
+
+    {
+      $bucket: {
+
+        groupBy: "$progress",
+
+        boundaries: [0,25,50,75,100],
+
+        default: "completed",
+
+        output: {
+          count: { $sum: 1 }
+        }
+
+      }
+
+    }
+
+  ]);
+
+  res.json({
+    success: true,
+    data: stats
+  });
+
+};
+
+// ANALYTICS: AVERAGE COMPLETION TIME FOR GOALS
+exports.averageCompletionTime =
+async (req, res) => {
+
+  const stats =
+  await Goal.aggregate([
+
+    {
+      $match: {
+        status: "completed"
+      }
+    },
+
+    {
+      $project: {
+
+        duration: {
+          $subtract: [
+            "$completedAt",
+            "$createdAt"
+          ]
+        }
+
+      }
+    },
+
+    {
+      $group: {
+
+        _id: null,
+
+        avgTime: {
+          $avg: "$duration"
+        }
+
+      }
+    }
+
+  ]);
+
+  res.json({
+    success: true,
+    data: stats
+  });
+
+};
+
+//  ANALYTICS: TOTAL SAVED AMOUNT BY CATEGORY
+exports.categorySavings =
+async (req, res) => {
+
+  const stats =
+  await Goal.aggregate([
+
+    {
+      $match: {
+        userId: req.user.id
+      }
+    },
+
+    {
+      $group: {
+
+        _id: "$category",
+
+        totalSaved: {
+          $sum: "$currentAmount"
+        }
+
+      }
+    }
+
+  ]);
+
+  res.json({
+    success: true,
+    data: stats
+  });
+
 };
