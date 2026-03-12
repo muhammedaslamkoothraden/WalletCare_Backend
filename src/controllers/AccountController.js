@@ -14,44 +14,29 @@ exports.getAccountBalances = async (req, res) => {
       return res.status(400).json({ error: 'Valid UserId is required' });
     }
 
-    // Filter: Include ACTIVE and FROZEN for Net Worth, exclude CLOSED.
     const query = { userId, status: { $in: ['ACTIVE', 'FROZEN'] } };
-    
     if (accountId) query._id = accountId;
     
     if (type && type.toUpperCase() !== 'ALL') {
-      const cleanType = type.trim();
-      query.type = new RegExp(`^${cleanType}$`, 'i'); 
+      query.type = new RegExp(`^${type.trim()}$`, 'i'); 
     }
 
     const accounts = await Account.find(query);
 
-    if (!accounts || accounts.length === 0) {
-      return res.status(200).json({ 
-        success: true, 
-        accounts:[], 
-        globalSummary: { totalAvailable: "0.00", totalReserved: "0.00", netWorth: "0.00" } 
-      });
-    }
+    let totals = {
+      available: new Decimal(0),
+      reserved: new Decimal(0),
+      netWorth: new Decimal(0)
+    };
 
-    // 1. Initialize Global Aggregators
-    let globalAvailable = new Decimal(0);
-    let globalReserved = new Decimal(0);
-    let globalNetWorth = new Decimal(0);
-
-    // 2. Transform Data and Calculate
     const formattedAccounts = accounts.map(acc => {
-      // FIX: Always use .toString() before passing to Decimal.js to avoid DecimalError
       const avail = new Decimal(acc.availableBalance?.toString() || "0");
       const resv = new Decimal(acc.reservedBalance?.toString() || "0");
-      
-      // Individual Account Total (Net Worth per account)
       const accountTotal = avail.plus(resv);
 
-      // Add to Global Totals
-      globalAvailable = globalAvailable.plus(avail);
-      globalReserved = globalReserved.plus(resv);
-      globalNetWorth = globalNetWorth.plus(accountTotal);
+      totals.available = totals.available.plus(avail);
+      totals.reserved = totals.reserved.plus(resv);
+      totals.netWorth = totals.netWorth.plus(accountTotal);
 
       return {
         id: acc._id,
@@ -60,7 +45,7 @@ exports.getAccountBalances = async (req, res) => {
         currency: acc.currency,
         available: avail.toFixed(2),
         reserved: resv.toFixed(2),
-        total: accountTotal.toFixed(2), // Calculated on the fly
+        total: accountTotal.toFixed(2),
         isDefault: acc.isDefault,
         status: acc.status
       };
@@ -71,73 +56,80 @@ exports.getAccountBalances = async (req, res) => {
       timestamp: new Date().toISOString(),
       accounts: formattedAccounts,
       globalSummary: {
-        totalAvailable: globalAvailable.toFixed(2),
-        totalReserved: globalReserved.toFixed(2),
-        netWorth: globalNetWorth.toFixed(2) // This is your calculated Net Worth
+        totalAvailable: totals.available.toFixed(2),
+        totalReserved: totals.reserved.toFixed(2),
+        netWorth: totals.netWorth.toFixed(2)
       }
     });
 
   } catch (error) {
     console.error('FETCH_BALANCES_ERROR:', error);
-    return res.status(500).json({ error: 'Internal Server Error', details: error.message });
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
 };
 
 /**
- * @description Creates a new account starting at 0.00.
+ * @description Creates a new account with smart default logic.
  */
 exports.createAccount = async (req, res) => {
   try {
     const { userId, name, type } = req.body;
+    const cleanType = type?.toUpperCase();
 
-    const allowedTypes = ['CASH', 'BANK'];
-    if (!type || !allowedTypes.includes(type.toUpperCase())) {
+    if (!['CASH', 'BANK'].includes(cleanType)) {
       return res.status(400).json({ error: 'Invalid type. Must be CASH or BANK' });
     }
 
-    // Default Logic: First account or any CASH account becomes default
     const existingCount = await Account.countDocuments({ userId, status: { $ne: 'CLOSED' } });
-    const isDefault = existingCount === 0 || type.toUpperCase() === 'CASH';
+    const isDefault = existingCount === 0 || cleanType === 'CASH';
 
     if (isDefault) {
       await Account.updateMany({ userId }, { isDefault: false });
     }
 
-    const newAccount = new Account({
+    const newAccount = await Account.create({
       userId,
-      name: name || (type.toUpperCase() === 'CASH' ? 'Main Cash' : 'New Bank'),
-      type: type.toUpperCase(),
-      isDefault: isDefault,
+      name: name || (cleanType === 'CASH' ? 'Main Cash' : 'New Bank'),
+      type: cleanType,
+      isDefault,
       status: 'ACTIVE'
     });
 
-    await newAccount.save();
-
-    return res.status(201).json({
-      success: true,
-      data: {
-        id: newAccount._id,
-        name: newAccount.name,
-        type: newAccount.type,
-        available: "0.00",
-        total: "0.00"
-      }
-    });
+    return res.status(201).json({ success: true, data: newAccount });
 
   } catch (error) {
     console.error('CREATE_ACCOUNT_ERROR:', error);
     res.status(500).json({ error: 'Could not create account' });
   }
-
 };
-  exports.setAccountAsDefault = async (req, res) => {
-  const { accountId } = req.params;
-  const { userId } = req.user; // From your auth middleware
 
-  // 1. Set all user's accounts to isDefault: false
-  await Account.updateMany({ userId }, { isDefault: false });
-  // 2. Set the chosen one to true
-  await Account.findByIdAndUpdate(accountId, { isDefault: true });
+/**
+ * @description Sets one account as primary and unsets all others.
+ */
+exports.setAccountAsDefault = async (req, res) => {
+  try {
+    const { accountId } = req.params;
+    const userId = req.user?.id || req.body.userId; // Ensure userId is available
 
-  res.status(200).json({ success: true });
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    // 1. Reset all user's accounts to isDefault: false
+    await Account.updateMany({ userId }, { isDefault: false });
+
+    // 2. Set chosen account to true (Security: check both ID and Owner)
+    const updated = await Account.findOneAndUpdate(
+      { _id: accountId, userId }, 
+      { isDefault: true },
+      { new: true }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ error: "Account not found or access denied" });
+    }
+
+    res.status(200).json({ success: true, message: "Primary account updated" });
+  } catch (error) {
+    console.error('SET_DEFAULT_ERROR:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 };
