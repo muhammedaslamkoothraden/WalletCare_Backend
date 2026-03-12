@@ -14,6 +14,11 @@ const LedgerSchema = new mongoose.Schema(
       required: true,
       index: true
     },
+    accountName: {
+    type: String,
+    required: true,
+    trim: true
+  },
     amount: {
       type: mongoose.Schema.Types.Decimal128,
       required: true
