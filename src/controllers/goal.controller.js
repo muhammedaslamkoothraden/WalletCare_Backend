@@ -115,7 +115,50 @@ exports.getGoals = async (req, res) => {
   }
 };
 
+//get goal by id
+exports.getGoalById = async (req, res) => {
+  try {
 
+    const { id } = req.params;
+
+    // Optional improvement: validate ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid goal id"
+      });
+    }
+    
+
+    const goal = await Goal.findOne({
+      _id: id,
+      userId: req.user.id
+    });
+
+    if (!goal) {
+      return res.status(404).json({
+        success: false,
+        message: "Goal not found"
+      });
+    }
+
+    // reuse service
+    const goalWithDetails = calculateGoalDetails([goal])[0];
+
+    res.status(200).json({
+      success: true,
+      data: goalWithDetails
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// UPDATE GOAL
 exports.updateGoal = async (req, res) => {
   try {
     const goal = await Goal.findById(req.params.id);

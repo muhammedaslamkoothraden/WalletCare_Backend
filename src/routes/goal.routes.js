@@ -14,7 +14,8 @@ const {
   getGoalProgressAnalytics,
   getGoalCategoryStats,
   getMonthlyGoalSavings,
-  getGoalPrediction
+  getGoalPrediction,
+  getGoalById
 } = require("../controllers/goal.controller");
 
 
@@ -27,5 +28,6 @@ router.post("/:id/withdraw", authMiddleware, withdrawFromGoal);
 router.put("/:id", authMiddleware, updateGoal);
 router.delete("/:id", authMiddleware, deleteGoal);
 router.get("/analytics/prediction",authMiddleware,getGoalPrediction);
+router.get("/:id", authMiddleware, getGoalById);
 
 module.exports = router;
