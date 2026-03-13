@@ -19,11 +19,6 @@ const LedgerSchema = new mongoose.Schema(
       required: true,
       index: true
     },
-    accountName: {
-      type: String,
-      required: true,
-      trim: true
-    },
     amount: {
       type: mongoose.Schema.Types.Decimal128,
       required: true,
@@ -59,7 +54,7 @@ const LedgerSchema = new mongoose.Schema(
       required: true,
       trim: true
     },
-    
+
     parentTransactionId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Ledger',
