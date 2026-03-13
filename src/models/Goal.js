@@ -48,6 +48,11 @@ const goalSchema = new mongoose.Schema(
       required: true,
       min: 1,
     },
+    description: {
+        type: String,
+        trim: true,
+        maxlength: 500
+    },
 
     currentAmount: {
       type: Number,
