@@ -69,7 +69,13 @@ const goalSchema = new mongoose.Schema(
       type: String,
       enum: ["daily", "weekly", "monthly", "none"],
       default: "weekly"
-    }
+    },
+    sharedWith: [
+  {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User"
+  }
+]
   },
   { timestamps: true }
 

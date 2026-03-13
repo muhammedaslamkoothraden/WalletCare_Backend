@@ -12,7 +12,9 @@ const {
   depositToGoal,   
   withdrawFromGoal,
   getGoalPrediction,
-  getAccountGoalTransitions // The new history function
+  getAccountGoalTransitions, // The new history function
+  getGoalById,
+  shareGoal
 } = require("../controllers/goal.controller");
 
 // --- 1. Static & Summary Routes ---
@@ -35,5 +37,8 @@ router.post("/:id/withdraw", authMiddleware, goalLimiter, withdrawFromGoal);
 
 router.put("/:id", authMiddleware, updateGoal);
 router.delete("/:id", authMiddleware, deleteGoal);
+router.get("/:id", authMiddleware, getGoalById); // Get a specific goal by ID 
+router.post("/:id/share",authMiddleware, shareGoal);
+
 
 module.exports = router;

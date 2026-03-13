@@ -225,7 +225,7 @@ exports.depositToGoal = async (req, res) => {
             userId: req.user.id,
             accountId: account._id,
             amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)),
-            transactionType: "EXPENSE",
+            transactionType: "TRANSFER",
             direction: "GOAL_ALLOCATION",
             category: goal.category,
             description: `deposit to goal ${goal.category}`,
@@ -294,7 +294,7 @@ exports.withdrawFromGoal = async (req, res) => {
             userId: req.user.id,
             accountId: account._id,
             amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)),
-            transactionType: "INCOME",
+            transactionType: "TRANSFER",
             direction: "GOAL_DEALLOCATION",
             category: goal.category,
             description: `Withdraw from goal: ${goal.title}`,
@@ -357,4 +357,30 @@ exports.getAccountGoalTransitions = async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
+};
+
+// SHARING GOAL WITH ANOTHER USER
+exports.shareGoal =
+async (req, res) => {
+
+  const { id } = req.params;
+  const { userId } = req.body;
+
+  const goal = await Goal.findById(id);
+
+  if (!goal) {
+    return res.status(404).json({
+      message: "Goal not found"
+    });
+  }
+
+  goal.sharedWith.push(userId);
+
+  await goal.save();
+
+  res.json({
+    success: true,
+    message: "Goal shared successfully"
+  });
+
 };
