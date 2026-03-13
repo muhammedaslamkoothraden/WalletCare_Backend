@@ -6,7 +6,6 @@ const userSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true, minlength: 2, maxlength: 50 },
     email: { type: String, required: true, lowercase: true, trim: true, unique: true },
     password: { type: String, required: true, minlength: 8, select: false },
-    phone: { type: String, default: null },
     isPremium: { type: Boolean, default: false },
     role: { type: String, enum: ["user", "admin"], default: "user" },
     isEmailVerified: { type: Boolean, default: false },
@@ -39,7 +38,6 @@ const pendingUserSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true, minlength: 2, maxlength: 50 },
     email: { type: String, required: true, lowercase: true, trim: true },
     password: { type: String, required: true, minlength: 8 },  // already hashed
-    phone: { type: String, default: null },
     role: { type: String, enum: ["user", "admin"], default: "user" },
     expiresAt: { type: Date, default: () => new Date(Date.now() + 24 * 60 * 60 * 1000) }
     // resendCount, otpExhausted, otpExpiresAt removed — OTP document owns this state now

@@ -43,7 +43,6 @@ exports.verifyEmailOtp = async (req, res) => {
       name: pendingUser.name,
       email: pendingUser.email,
       password: pendingUser.password,   // already hashed from registration
-      phone: pendingUser.phone,
       role: pendingUser.role,
       isEmailVerified: true
     });

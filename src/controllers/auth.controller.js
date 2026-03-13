@@ -10,7 +10,7 @@ const hashToken = require("../utils/hashToken");
 // Register
 exports.registerUser = async (req, res) => {
   try {
-    const { name, email, password, phone } = req.body;
+    const { name, email, password } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({ message: "Name, email and password are required" });
@@ -36,7 +36,7 @@ exports.registerUser = async (req, res) => {
       const hashedPassword = await bcrypt.hash(password, 10);
       await PendingUser.findOneAndUpdate(
         { email: normalizedEmail },
-        { name, password: hashedPassword, phone },
+        { name, password: hashedPassword },
         { new: true }
       );
 
@@ -76,7 +76,6 @@ exports.registerUser = async (req, res) => {
       name,
       email: normalizedEmail,
       password: hashedPassword,
-      phone,
       role: "user"
     });
 

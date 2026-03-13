@@ -26,7 +26,6 @@ exports.getProfile = async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
-        phone: user.phone,
         role: user.role,
         isPremium: user.isPremium,
         isEmailVerified: user.isEmailVerified,
@@ -46,15 +45,14 @@ exports.getProfile = async (req, res) => {
 // Update Profile
 exports.updateProfile = async (req, res) => {
   try {
-    const { name, phone } = req.body;
+    const { name } = req.body;
 
-    if (!name && !phone) {
+    if (!name) {
       return res.status(400).json({ message: "Provide at least one field to update" });
     }
 
     const updates = {};
     if (name) updates.name = name.trim();
-    if (phone) updates.phone = phone.trim();
 
     const user = await User.findByIdAndUpdate(
       req.user._id,
@@ -72,7 +70,6 @@ exports.updateProfile = async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
-        phone: user.phone,
         role: user.role,
         isPremium: user.isPremium,
         isEmailVerified: user.isEmailVerified,
