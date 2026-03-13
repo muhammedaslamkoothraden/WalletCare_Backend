@@ -135,22 +135,21 @@ exports.getHistory = async (req, res, next) => {
       query.accountId = new mongoose.Types.ObjectId(accountId);
     }
 
-    if (category && category !== 'All Categories') {
-      query.category = category;
-    }
+    // ... existing category logic ...
 
     const history = await Ledger.find(query)
+      .populate('accountId', 'name') // 🎯 FETCH the name from the Account model
       .sort({ _id: -1 })
       .limit(parseInt(limit))
       .lean();
 
     return res.status(200).json({
       success: true,
-      // Mapping ensures the amount and any other Decimal128 fields are strings
       data: history.map(tx => ({ 
         ...tx, 
         amount: tx.amount.toString(),
-        accountName: tx.accountName || "Unknown Account" // Fallback for old records
+        // 🎯 Use the populated name, fallback to stored name, then "Unknown"
+        accountName: tx.accountId?.name || tx.accountName || "Unknown Account"
       }))
     });
   } catch (error) {

@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const Ledger = require('../models/Ledger');
+const Ledger = require('../models/ledger');
 const Account = require('../models/Account');
 const Goal = require('../models/Goal');
 
