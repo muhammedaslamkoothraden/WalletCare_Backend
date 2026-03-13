@@ -11,12 +11,21 @@ const {
 
 const { verifyEmailOtp } = require("../controllers/verificationController");
 
+const validate = require("../middlewares/validate.middleware");
+const {
+  validateRegister,
+  validateVerifyEmail,
+  validateLogin,
+  validateForgotPassword,
+  validateResetPassword
+} = require("../validators/auth.validator");
+
 // registration flow
-router.post("/register", registerUser);
-router.post("/verify-email", verifyEmailOtp);   // renamed from /verify-otp
+router.post("/register", validateRegister, validate, registerUser);
+router.post("/verify-email", validateVerifyEmail, validate, verifyEmailOtp);
 
 // login
-router.post("/login", loginUser);
+router.post("/login", validateLogin, validate, loginUser);
 
 // token management
 router.post("/refresh", refreshAccessToken);
@@ -24,7 +33,7 @@ router.post("/refresh", refreshAccessToken);
 // forgot password flow
 // resend OTP  → POST /api/otp/resend  { email, purpose: "reset_password" }
 // verify OTP  → POST /api/otp/verify  { email, otp, purpose: "reset_password" }
-router.post("/forgot-password", forgotPassword);
-router.post("/reset-password", resetPassword);
+router.post("/forgot-password", validateForgotPassword, validate, forgotPassword);
+router.post("/reset-password", validateResetPassword, validate, resetPassword);
 
 module.exports = router;

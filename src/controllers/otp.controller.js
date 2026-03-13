@@ -11,14 +11,6 @@ exports.resendOtpHandler = async (req, res) => {
   try {
     const { email, purpose } = req.body;
 
-    if (!email || !purpose) {
-      return res.status(400).json({ message: "Email and purpose are required" });
-    }
-
-    if (!["signup", "reset_password"].includes(purpose)) {
-      return res.status(400).json({ message: "Invalid purpose" });
-    }
-
     const normalizedEmail = email.toLowerCase().trim();
 
     // for signup — check pending user exists
@@ -80,14 +72,6 @@ exports.verifyOtpHandler = async (req, res) => {
   try {
     const { email, otp, purpose } = req.body;
 
-    if (!email || !otp || !purpose) {
-      return res.status(400).json({ message: "Email, OTP and purpose are required" });
-    }
-
-    if (purpose !== "reset_password") {
-      return res.status(400).json({ message: "Invalid purpose. Use /auth/verify-email for signup." });
-    }
-
     const normalizedEmail = email.toLowerCase().trim();
 
     const user = await User.findOne({ email: normalizedEmail });
@@ -123,14 +107,6 @@ exports.verifyOtpHandler = async (req, res) => {
 exports.resendOtpPrivate = async (req, res) => {
   try {
     const { purpose } = req.body;
-
-    if (!purpose) {
-      return res.status(400).json({ message: "Purpose is required" });
-    }
-
-    if (purpose !== "reset_password") {
-      return res.status(400).json({ message: "Invalid purpose" });
-    }
 
     // email from token — no need to trust frontend
     const email = req.user.email;
@@ -174,14 +150,6 @@ exports.resendOtpPrivate = async (req, res) => {
 exports.verifyOtpPrivate = async (req, res) => {
   try {
     const { otp, purpose } = req.body;
-
-    if (!otp || !purpose) {
-      return res.status(400).json({ message: "OTP and purpose are required" });
-    }
-
-    if (purpose !== "reset_password") {
-      return res.status(400).json({ message: "Invalid purpose" });
-    }
 
     // email from token — no need to trust frontend
     const email = req.user.email;

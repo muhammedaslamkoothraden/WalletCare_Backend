@@ -12,14 +12,6 @@ exports.registerUser = async (req, res) => {
   try {
     const { name, email, password } = req.body;
 
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: "Name, email and password are required" });
-    }
-
-    if (password.length < 8) {
-      return res.status(400).json({ message: "Password must be at least 8 characters" });
-    }
-
     const normalizedEmail = email.toLowerCase().trim();
 
     // block if already a verified user
@@ -99,10 +91,6 @@ exports.loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email and password required" });
-    }
-
     const normalizedEmail = email.toLowerCase().trim();
 
     // explicitly select password since it is excluded in schema
@@ -159,10 +147,6 @@ exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
 
-    if (!email) {
-      return res.status(400).json({ message: "Email is required" });
-    }
-
     const normalizedEmail = email.toLowerCase().trim();
 
     // generic response — never reveal whether email exists
@@ -210,14 +194,6 @@ exports.forgotPassword = async (req, res) => {
 exports.resetPassword = async (req, res) => {
   try {
     const { resetToken, newPassword } = req.body;
-
-    if (!resetToken || !newPassword) {
-      return res.status(400).json({ message: "Reset token and new password are required" });
-    }
-
-    if (newPassword.length < 8) {
-      return res.status(400).json({ message: "Password must be at least 8 characters" });
-    }
 
     // verify reset token
     let decoded;
@@ -267,10 +243,6 @@ exports.resetPassword = async (req, res) => {
 exports.refreshAccessToken = async (req, res) => {
   try {
     const { refreshToken } = req.body;
-
-    if (!refreshToken) {
-      return res.status(401).json({ message: "Refresh token required" });
-    }
 
     let decoded;
     try {
