@@ -59,6 +59,7 @@ const LedgerSchema = new mongoose.Schema(
       required: true,
       trim: true
     },
+    
     parentTransactionId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Ledger',
