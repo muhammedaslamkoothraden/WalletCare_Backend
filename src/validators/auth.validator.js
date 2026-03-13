@@ -5,7 +5,7 @@ exports.validateRegister = [
   body("name")
     .trim()
     .notEmpty().withMessage("Name is required").bail()
-    .isLength({ min: 2, max: 50 }).withMessage("Name must be between 2 and 50 characters").bail()
+    .isLength({ min: 2, max: 40 }).withMessage("Name must be between 2 and 50 characters").bail()
     .matches(/^[a-zA-Z\s]+$/).withMessage("Name must contain letters only"),
 
   body("email")
