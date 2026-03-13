@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const Decimal = require('decimal.js');
-const Ledger = require('../models/Ledger');
+const Ledger = require('../models/ledger');
 const Account = require('../models/Account');
 
 /**
@@ -93,7 +93,6 @@ switch (action) {
     const [newLedger] = await Ledger.create([{
       userId, 
       accountId,
-      accountName, // 🔥 NEW: Pass the captured name into the ledger
       amount: mongoose.Types.Decimal128.fromString(safeAmount.toFixed(2)),
       transactionType, 
       direction, 
