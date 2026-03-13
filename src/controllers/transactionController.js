@@ -39,14 +39,46 @@ exports.processTransaction = async (req, res, next) => {
     let balanceChange = new Decimal(0);
     let reservedChange = new Decimal(0);
 
-    // --- 3. LOGIC ENGINE (Keep your existing REVERSAL/INCOME/EXPENSE logic) ---
 
-if (transactionType === 'INCOME') {
-  balanceChange = safeAmount; // Positive change
-} else if (transactionType === 'EXPENSE') {
-  balanceChange = safeAmount.negated(); // Negative change
-} else if (transactionType === 'REVERSAL' && parentTransactionId) {
-  balanceChange = safeAmount; 
+// --- 3. LOGIC ENGINE ---
+const action = req.body.action || 'STANDARD';
+
+switch (action) {
+  case 'STANDARD':
+    if (transactionType === 'INCOME') {
+      balanceChange = safeAmount; // + Available
+    } else if (transactionType === 'EXPENSE') {
+      balanceChange = safeAmount.negated(); // - Available
+    }
+    break;
+
+  case 'GOAL_ALLOCATION':
+    // User puts money aside for a goal [cite: 15]
+    balanceChange = safeAmount.negated(); // - Available
+    reservedChange = safeAmount;         // + Reserved
+    break;
+
+  case 'GOAL_DEALLOCATION':
+    // User cancels goal or moves money back 
+    balanceChange = safeAmount;          // + Available
+    reservedChange = safeAmount.negated(); // - Reserved
+    break;
+
+  case 'GOAL_COMPLETION':
+    // Goal is met and "spent" 
+    reservedChange = safeAmount.negated(); // - Reserved
+    break;
+
+  case 'ACCOUNT_TRANSFER_OUT':
+    balanceChange = safeAmount.negated(); // - Available
+    break;
+
+  case 'ACCOUNT_TRANSFER_IN':
+    balanceChange = safeAmount; // + Available
+    break;
+
+  default:
+    throw new Error('Unsupported action logic');
 }
 
     // --- 4. SAFETY GUARD ---
