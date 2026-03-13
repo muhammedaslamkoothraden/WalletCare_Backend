@@ -1,6 +1,11 @@
 const mongoose = require('mongoose');
 const Decimal = require('decimal.js');
 
+/**
+ * @desc    User Account Schema (Represents Main Wallets & Bank Accounts)
+ * @notes   Financial values are strictly stored as Decimal128 to prevent 
+ * floating-point calculation errors inherent in standard JavaScript numbers.
+ */
 const AccountSchema = new mongoose.Schema(
   {
     userId: {
@@ -23,11 +28,13 @@ const AccountSchema = new mongoose.Schema(
     },
     availableBalance: {
       type: mongoose.Schema.Types.Decimal128,
-      default: "0.00"
+      default: "0.00",
+      min: [0, 'Available balance cannot be negative'] 
     },
     reservedBalance: {
       type: mongoose.Schema.Types.Decimal128,
-      default: "0.00"
+      default: "0.00",
+      min: [0, 'Reserved balance cannot be negative']
     },
     currency: {
       type: String,
@@ -51,20 +58,12 @@ const AccountSchema = new mongoose.Schema(
   }
 );
 
-// Unique name per user
 AccountSchema.index({ userId: 1, name: 1 }, { unique: true });
-AccountSchema.pre('save', async function() {
-  // 1. Ensure balances exist as strings for Decimal.js
+
+AccountSchema.virtual('totalBalance').get(function() {
   const avail = new Decimal(this.availableBalance?.toString() || "0");
   const res = new Decimal(this.reservedBalance?.toString() || "0");
-  
-  // 2. Calculate
-  const total = avail.plus(res);
-  
-  // 3. Assign back to Decimal128
-  this.totalBalance = mongoose.Types.Decimal128.fromString(total.toFixed(2));
-  
-  // No next() needed here!
+  return avail.plus(res).toFixed(2);
 });
 
 module.exports = mongoose.model('Account', AccountSchema);
