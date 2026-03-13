@@ -18,8 +18,23 @@ const generateRefreshToken = (userId) => {
   );
 };
 
+// short-lived — proves OTP was verified, used only for password reset flow
+const generateResetToken = (userId) => {
+  return jwt.sign(
+    { userId, purpose: "reset_password" },
+    process.env.ACCESS_TOKEN_SECRET,
+    { expiresIn: "10m" }
+  );
+};
+
+// verify refresh token — throws TokenExpiredError or JsonWebTokenError
 const verifyRefreshToken = (token) => {
   return jwt.verify(token, process.env.REFRESH_TOKEN_SECRET);
 };
 
-module.exports = { generateAccessToken, generateRefreshToken, verifyRefreshToken };
+// verify reset token — throws TokenExpiredError or JsonWebTokenError
+const verifyResetToken = (token) => {
+  return jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+};
+
+module.exports = { generateAccessToken, generateRefreshToken, generateResetToken, verifyRefreshToken, verifyResetToken };

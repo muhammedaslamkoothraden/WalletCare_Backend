@@ -1,12 +1,10 @@
 const { User, PendingUser } = require("../models/user");
-const Otp = require("../models/otp");
 const { createOtp, resendOtp } = require("../services/otp.service");
+const Otp = require("../models/otp");
 const bcrypt = require("bcryptjs");
 
-const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require("../utils/token");
+const { generateAccessToken, generateRefreshToken, verifyRefreshToken, verifyResetToken } = require("../utils/token");
 const hashToken = require("../utils/hashToken");
-
-const OTP_EXPIRY_MS = 10 * 60 * 1000;
 
 
 // Register
@@ -24,7 +22,7 @@ exports.registerUser = async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Block if already a verified user
+    // block if already a verified user
     const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
       return res.status(400).json({ message: "An account with this email already exists" });
@@ -34,31 +32,7 @@ exports.registerUser = async (req, res) => {
 
     if (existingPending) {
 
-      // Check resend limit before doing anything
-      if (existingPending.resendCount >= 5) {
-        if (existingPending.otpExhausted) {
-          const now = new Date();
-          const expiresAt = existingPending.otpExpiresAt;
-
-          if (expiresAt && expiresAt > now) {
-            // OTP deleted by max attempts and wait time not over
-            const secondsLeft = Math.ceil((expiresAt - now) / 1000);
-            const minutesLeft = Math.ceil(secondsLeft / 60);
-            return res.status(429).json({
-              message: `Maximum resend attempts reached. Please wait ${minutesLeft} minute(s) until the OTP expires.`,
-              retryAfter: secondsLeft
-            });
-          }
-          // otpExpiresAt passed — fall through and allow fresh start below
-        } else {
-          // OTP still alive — block
-          return res.status(429).json({
-            message: "Maximum resend attempts reached. Please wait until the OTP expires."
-          });
-        }
-      }
-
-      // Update pending record with latest submitted data before resending
+      // update pending record with latest submitted data
       const hashedPassword = await bcrypt.hash(password, 10);
       await PendingUser.findOneAndUpdate(
         { email: normalizedEmail },
@@ -66,41 +40,36 @@ exports.registerUser = async (req, res) => {
         { new: true }
       );
 
-      try {
-        await resendOtp(normalizedEmail, "signup");
-        await PendingUser.findOneAndUpdate(
-          { email: normalizedEmail },
-          { otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS) }
-        );
-        return res.status(200).json({ message: "A verification OTP has been sent to your email" });
+      // check if OTP document already exists — respect cooldown + resend limits
+      const existingOtp = await Otp.findOne({ identifier: normalizedEmail, purpose: "signup" });
 
-      } catch (resendError) {
-        if (resendError.message === "OTP_EXPIRED") {
-          await createOtp(normalizedEmail, "signup");
-          await PendingUser.findOneAndUpdate(
-            { email: normalizedEmail },
-            {
-              resendCount: 1,
-              otpExhausted: false,
-              otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS)
-            }
-          );
-          return res.status(200).json({ message: "A verification OTP has been sent to your email" });
+      if (existingOtp) {
+        try {
+          await resendOtp(normalizedEmail, "signup");
+        } catch (resendError) {
+
+          if (resendError.message === "COOLDOWN_ACTIVE") {
+            return res.status(429).json({ message: "Please wait 60 seconds before requesting another OTP." });
+          }
+
+          if (resendError.message === "MAX_RESEND_EXHAUSTED") {
+            return res.status(429).json({
+              message: "Maximum resend attempts reached. Please wait for the OTP to expire.",
+              retryAfter: resendError.retryAfter
+            });
+          }
+
+          throw resendError;
         }
-
-        if (resendError.message === "COOLDOWN_ACTIVE") {
-          return res.status(429).json({ message: "Please wait 60 seconds before requesting another OTP" });
-        }
-
-        if (resendError.message === "RESEND_LIMIT_REACHED") {
-          return res.status(429).json({ message: "Maximum resend attempts reached. Please wait for the OTP to expire" });
-        }
-
-        throw resendError;
+      } else {
+        // no existing OTP — fresh start
+        await createOtp(normalizedEmail, "signup");
       }
+
+      return res.status(200).json({ message: "A verification OTP has been sent to your email" });
     }
 
-    // No existing record — create pending user and send OTP
+    // no existing record — create pending user and send OTP
     const hashedPassword = await bcrypt.hash(password, 10);
 
     await PendingUser.create({
@@ -108,8 +77,7 @@ exports.registerUser = async (req, res) => {
       email: normalizedEmail,
       password: hashedPassword,
       phone,
-      role: "user",
-      otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS)
+      role: "user"
     });
 
     await createOtp(normalizedEmail, "signup");
@@ -125,6 +93,7 @@ exports.registerUser = async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 };
+
 
 // Login
 exports.loginUser = async (req, res) => {
@@ -154,6 +123,11 @@ exports.loginUser = async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
+    // auto recover — if account was scheduled for deletion, cancel it silently
+    if (user.scheduledDeletionAt) {
+      await User.findByIdAndUpdate(user._id, { scheduledDeletionAt: null });
+    }
+
     // generate tokens via utils — no raw jwt.sign calls here
     const accessToken = generateAccessToken(user._id, user.role);
     const refreshToken = generateRefreshToken(user._id);
@@ -181,8 +155,8 @@ exports.loginUser = async (req, res) => {
 };
 
 
-// Resend OTP
-exports.resendEmailOtp = async (req, res) => {
+// Forgot Password — send OTP to email (login page)
+exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
 
@@ -192,94 +166,100 @@ exports.resendEmailOtp = async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
 
-    const pendingUser = await PendingUser.findOne({ email: normalizedEmail });
-
     // generic response — never reveal whether email exists
-    if (!pendingUser) {
-      return res.status(200).json({ message: "If a pending registration exists, a new OTP has been sent." });
+    const user = await User.findOne({ email: normalizedEmail });
+    if (!user) {
+      return res.status(200).json({ message: "If this email exists, an OTP has been sent" });
     }
 
-    const currentResendCount = pendingUser.resendCount;
+    // check if OTP document already exists — respect cooldown + resend limits
+    const existingOtp = await Otp.findOne({ identifier: normalizedEmail, purpose: "reset_password" });
 
-    if (currentResendCount >= 5) {
-      if (pendingUser.otpExhausted) {
-        const now = new Date();
-        const expiresAt = pendingUser.otpExpiresAt;
+    if (existingOtp) {
+      try {
+        await resendOtp(normalizedEmail, "reset_password");
+      } catch (resendError) {
 
-        if (expiresAt && expiresAt > now) {
-          // OTP deleted by max attempts and wait time not over — tell user how long to wait
-          const secondsLeft = Math.ceil((expiresAt - now) / 1000);
-          const minutesLeft = Math.ceil(secondsLeft / 60);
+        if (resendError.message === "COOLDOWN_ACTIVE") {
+          return res.status(429).json({ message: "Please wait 60 seconds before requesting another OTP." });
+        }
+
+        if (resendError.message === "MAX_RESEND_EXHAUSTED") {
           return res.status(429).json({
-            message: `Maximum resend attempts reached. Please wait ${minutesLeft} minute(s) until the OTP expires.`,
-            retryAfter: secondsLeft
+            message: "Maximum resend attempts reached. Please wait for the OTP to expire.",
+            retryAfter: resendError.retryAfter
           });
         }
 
-        // otpExpiresAt has passed — treat as natural expiry, reset everything
-        await createOtp(normalizedEmail, "signup", 1);
-        await PendingUser.findByIdAndUpdate(pendingUser._id, {
-          resendCount: 1,
-          otpExhausted: false,
-          otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS)
-        });
-        return res.status(200).json({ message: "OTP resent successfully." });
+        throw resendError;
       }
-
-      // resendCount >= 5 but not exhausted — check if OTP still alive
-      const existingOtp = await Otp.findOne({ identifier: normalizedEmail, purpose: "signup" });
-
-      if (existingOtp) {
-        // OTP still alive — block
-        return res.status(429).json({ message: "Maximum resend attempts reached. Please wait until the OTP expires." });
-      }
-
-      // OTP expired naturally — reset and allow fresh start
-      await createOtp(normalizedEmail, "signup", 1);
-      await PendingUser.findByIdAndUpdate(pendingUser._id, {
-        resendCount: 1,
-        otpExhausted: false,
-        otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS)
-      });
-      return res.status(200).json({ message: "OTP resent successfully." });
+    } else {
+      // no existing OTP — fresh start
+      await createOtp(normalizedEmail, "reset_password");
     }
 
-    try {
-      await resendOtp(normalizedEmail, "signup");
-      // OTP exists and resend succeeded — sync count and expiry to PendingUser
-      await PendingUser.findByIdAndUpdate(pendingUser._id, {
-        $inc: { resendCount: 1 },
-        otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS)
-      });
-
-    } catch (resendError) {
-
-      if (resendError.message === "RESEND_LIMIT_REACHED") {
-        return res.status(429).json({ message: "Maximum resend attempts reached. Please wait until the OTP expires." });
-      }
-
-      if (resendError.message === "COOLDOWN_ACTIVE") {
-        return res.status(429).json({ message: "Please wait 60 seconds before requesting another OTP." });
-      }
-
-      if (resendError.message === "OTP_EXPIRED") {
-        // OTP deleted due to max attempts — carry count and expiry forward
-        await createOtp(normalizedEmail, "signup", currentResendCount + 1);
-        await PendingUser.findByIdAndUpdate(pendingUser._id, {
-          $inc: { resendCount: 1 },
-          otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS)
-        });
-        return res.status(200).json({ message: "OTP resent successfully." });
-      }
-
-      throw resendError;
-    }
-
-    return res.status(200).json({ message: "OTP resent successfully." });
+    return res.status(200).json({ message: "If this email exists, an OTP has been sent" });
 
   } catch (error) {
-    console.error("resendEmailOtp error:", error.message);
-    return res.status(500).json({ message: "Failed to resend OTP. Please try again." });
+    console.error("forgotPassword error:", error.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+
+// Reset Password — requires resetToken from POST /api/otp/verify
+exports.resetPassword = async (req, res) => {
+  try {
+    const { resetToken, newPassword } = req.body;
+
+    if (!resetToken || !newPassword) {
+      return res.status(400).json({ message: "Reset token and new password are required" });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ message: "Password must be at least 8 characters" });
+    }
+
+    // verify reset token
+    let decoded;
+    try {
+      decoded = verifyResetToken(resetToken);
+    } catch (err) {
+      if (err.name === "TokenExpiredError") {
+        return res.status(401).json({ message: "Reset token expired. Please verify OTP again." });
+      }
+      return res.status(401).json({ message: "Invalid reset token" });
+    }
+
+    // ensure token purpose is correct — reject if access token used here
+    if (decoded.purpose !== "reset_password") {
+      return res.status(401).json({ message: "Invalid reset token" });
+    }
+
+    const user = await User.findById(decoded.userId).select("+password");
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // prevent reusing same password
+    const isSame = await bcrypt.compare(newPassword, user.password);
+    if (isSame) {
+      return res.status(400).json({ message: "New password must be different from current password" });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // save new password + clear refresh token — forces re-login on all devices
+    await User.findByIdAndUpdate(decoded.userId, {
+      password: hashedPassword,
+      refreshToken: null
+    });
+
+    return res.status(200).json({ message: "Password reset successfully. Please login again." });
+
+  } catch (error) {
+    console.error("resetPassword error:", error.message);
+    return res.status(500).json({ message: "Server error" });
   }
 };
 

@@ -35,6 +35,7 @@ exports.verifyEmailOtp = async (req, res) => {
     }
 
     // throws if OTP is invalid, expired, or max attempts exceeded
+    // otp.service handles otpExhausted internally — no PendingUser update needed
     await verifyOtp(normalizedEmail, otp, "signup", session);
 
     // promote pending → main User collection
@@ -92,12 +93,8 @@ exports.verifyEmailOtp = async (req, res) => {
 
     console.error("verifyEmailOtp error:", error.message);
 
+    // otp.service handles otpExhausted internally — just return error message
     if (error.code === "MAX_ATTEMPTS_EXCEEDED") {
-      // OTP deleted by max wrong attempts — flag PendingUser to block resend bypass
-      await PendingUser.findOneAndUpdate(
-        { email: req.body.email?.toLowerCase().trim() },
-        { otpExhausted: true }
-      );
       return res.status(400).json({ message: "Maximum OTP attempts exceeded. Please request a new OTP." });
     }
 

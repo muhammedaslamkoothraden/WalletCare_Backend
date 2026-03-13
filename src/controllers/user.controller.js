@@ -1,11 +1,20 @@
-const { User } = require("../models/user");
+const { User, PendingUser } = require("../models/user");
 const bcrypt = require("bcryptjs");
+const { createOtp, resendOtp } = require("../services/otp.service");
+const Otp = require("../models/otp");
+const Account = require("../models/Account");
+const Goal = require("../models/Goal");
+const Ledger = require("../models/ledger");
+const { verifyResetToken, generateAccessToken, generateRefreshToken } = require("../utils/token");
+const hashToken = require("../utils/hashToken");
+
+const DELETION_DAYS = 14;
+
 
 // Get Profile
 exports.getProfile = async (req, res) => {
   try {
 
-    // req.user._id injected by auth middleware
     const user = await User.findById(req.user._id);
 
     if (!user) {
@@ -21,7 +30,9 @@ exports.getProfile = async (req, res) => {
         role: user.role,
         isPremium: user.isPremium,
         isEmailVerified: user.isEmailVerified,
-        createdAt: user.createdAt
+        createdAt: user.createdAt,
+        // include deletion date if scheduled — frontend can show warning banner
+        scheduledDeletionAt: user.scheduledDeletionAt || null
       }
     });
 
@@ -31,17 +42,16 @@ exports.getProfile = async (req, res) => {
   }
 };
 
+
 // Update Profile
 exports.updateProfile = async (req, res) => {
   try {
     const { name, phone } = req.body;
 
-    // at least one field required
     if (!name && !phone) {
       return res.status(400).json({ message: "Provide at least one field to update" });
     }
 
-    // build update object with only provided fields
     const updates = {};
     if (name) updates.name = name.trim();
     if (phone) updates.phone = phone.trim();
@@ -49,7 +59,7 @@ exports.updateProfile = async (req, res) => {
     const user = await User.findByIdAndUpdate(
       req.user._id,
       updates,
-      { new: true, runValidators: true }  // new: true returns updated doc
+      { new: true, runValidators: true }
     );
 
     if (!user) {
@@ -76,12 +86,13 @@ exports.updateProfile = async (req, res) => {
   }
 };
 
-// Change Password
+
+// Change Password — user knows current password
+// generates new tokens — user stays logged in
 exports.changePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
-    // basic validation
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ message: "Current and new password are required" });
     }
@@ -90,36 +101,37 @@ exports.changePassword = async (req, res) => {
       return res.status(400).json({ message: "New password must be at least 8 characters" });
     }
 
-    // explicitly select password — excluded in schema by default
     const user = await User.findById(req.user._id).select("+password");
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // verify current password
     const isMatch = await bcrypt.compare(currentPassword, user.password);
     if (!isMatch) {
       return res.status(401).json({ message: "Current password is incorrect" });
     }
 
-    // prevent reusing same password
     const isSame = await bcrypt.compare(newPassword, user.password);
     if (isSame) {
       return res.status(400).json({ message: "New password must be different from current password" });
     }
 
-    // hash new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    // save new password + clear refresh token — forces re-login on all devices
+    // generate new tokens — user stays logged in
+    const accessToken = generateAccessToken(user._id, user.role);
+    const refreshToken = generateRefreshToken(user._id);
+
     await User.findByIdAndUpdate(req.user._id, {
       password: hashedPassword,
-      refreshToken: null
+      refreshToken: hashToken(refreshToken)
     });
 
     return res.status(200).json({
-      message: "Password changed successfully. Please login again."
+      message: "Password changed successfully.",
+      accessToken,
+      refreshToken
     });
 
   } catch (error) {
@@ -128,11 +140,166 @@ exports.changePassword = async (req, res) => {
   }
 };
 
+
+// Forgot Password — inside app, user doesn't know current password
+// email from token — no need to send in body
+exports.forgotPassword = async (req, res) => {
+  try {
+
+    const email = req.user.email;
+
+    const existingOtp = await Otp.findOne({ identifier: email, purpose: "reset_password" });
+
+    if (existingOtp) {
+      try {
+        await resendOtp(email, "reset_password");
+      } catch (resendError) {
+
+        if (resendError.message === "COOLDOWN_ACTIVE") {
+          return res.status(429).json({ message: "Please wait 60 seconds before requesting another OTP." });
+        }
+
+        if (resendError.message === "MAX_RESEND_EXHAUSTED") {
+          return res.status(429).json({
+            message: "Maximum resend attempts reached. Please wait for the OTP to expire.",
+            retryAfter: resendError.retryAfter
+          });
+        }
+
+        throw resendError;
+      }
+    } else {
+      await createOtp(email, "reset_password");
+    }
+
+    return res.status(200).json({ message: "OTP sent to your registered email." });
+
+  } catch (error) {
+    console.error("forgotPassword error:", error.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+
+// Reset Password — inside app, requires resetToken from /otp/verify/private
+// generates new tokens — user stays logged in
+exports.resetPassword = async (req, res) => {
+  try {
+    const { resetToken, newPassword } = req.body;
+
+    if (!resetToken || !newPassword) {
+      return res.status(400).json({ message: "Reset token and new password are required" });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ message: "Password must be at least 8 characters" });
+    }
+
+    let decoded;
+    try {
+      decoded = verifyResetToken(resetToken);
+    } catch (err) {
+      if (err.name === "TokenExpiredError") {
+        return res.status(401).json({ message: "Reset token expired. Please verify OTP again." });
+      }
+      return res.status(401).json({ message: "Invalid reset token" });
+    }
+
+    if (decoded.purpose !== "reset_password") {
+      return res.status(401).json({ message: "Invalid reset token" });
+    }
+
+    if (decoded.userId.toString() !== req.user._id.toString()) {
+      return res.status(401).json({ message: "Invalid reset token" });
+    }
+
+    const user = await User.findById(req.user._id).select("+password");
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const isSame = await bcrypt.compare(newPassword, user.password);
+    if (isSame) {
+      return res.status(400).json({ message: "New password must be different from current password" });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // generate new tokens — user stays logged in
+    const accessToken = generateAccessToken(user._id, user.role);
+    const refreshToken = generateRefreshToken(user._id);
+
+    await User.findByIdAndUpdate(req.user._id, {
+      password: hashedPassword,
+      refreshToken: hashToken(refreshToken)
+    });
+
+    return res.status(200).json({
+      message: "Password reset successfully.",
+      accessToken,
+      refreshToken
+    });
+
+  } catch (error) {
+    console.error("resetPassword error:", error.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+
+// Delete Account — soft delete, schedules permanent deletion after 14 days
+exports.deleteAccount = async (req, res) => {
+  try {
+    const { password } = req.body;
+
+    if (!password) {
+      return res.status(400).json({ message: "Password is required to delete account" });
+    }
+
+    const user = await User.findById(req.user._id).select("+password");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ message: "Incorrect password" });
+    }
+
+    // already scheduled — tell user when it will be deleted
+    if (user.scheduledDeletionAt) {
+      const daysLeft = Math.ceil((user.scheduledDeletionAt - new Date()) / (1000 * 60 * 60 * 24));
+      return res.status(200).json({
+        message: `Your account is already scheduled for deletion in ${daysLeft} day(s).`,
+        scheduledDeletionAt: user.scheduledDeletionAt
+      });
+    }
+
+    const scheduledDeletionAt = new Date(Date.now() + DELETION_DAYS * 24 * 60 * 60 * 1000);
+
+    // null refreshToken — forces logout after current accessToken expires
+    await User.findByIdAndUpdate(req.user._id, {
+      scheduledDeletionAt,
+      refreshToken: null
+    });
+
+    return res.status(200).json({
+      message: `Account scheduled for deletion in ${DELETION_DAYS} days. Login anytime before then to cancel.`,
+      scheduledDeletionAt
+    });
+
+  } catch (error) {
+    console.error("deleteAccount error:", error.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+
 // Logout
 exports.logoutUser = async (req, res) => {
   try {
 
-    // clear refresh token from DB — invalidates all devices
     await User.findByIdAndUpdate(req.user._id, { refreshToken: null });
 
     return res.status(200).json({ message: "Logged out successfully" });

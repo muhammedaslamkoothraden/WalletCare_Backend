@@ -113,4 +113,4 @@ LedgerSchema.pre('save', async function() {
   }
   return; 
 });
-module.exports = mongoose.model('Ledger', LedgerSchema);
+module.exports = mongoose.models.Ledger || mongoose.model('Ledger', LedgerSchema);

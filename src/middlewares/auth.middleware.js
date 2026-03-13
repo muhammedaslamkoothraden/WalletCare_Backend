@@ -22,7 +22,16 @@ const protect = async (req, res, next) => {
       process.env.ACCESS_TOKEN_SECRET
     );
 
-    // 4. Validate that the user still exists in the database
+    // 4. Block resetToken from being used as accessToken
+    // resetToken carries a purpose field — accessToken never does
+    if (decoded.purpose) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid access token"
+      });
+    }
+
+    // 5. Validate that the user still exists in the database
     const user = await User.findById(decoded.userId).select("-password");
 
     if (!user) {
@@ -32,7 +41,7 @@ const protect = async (req, res, next) => {
       });
     }
 
-    // 5. Attach authenticated user to request object
+    // 6. Attach authenticated user to request object
     req.user = user;
 
     next();

@@ -18,7 +18,12 @@ const otpSchema = new mongoose.Schema(
 
     otpHash: {
       type: String,
-      required: true
+      default: null        // null after max attempts or successful verification
+    },
+
+    otpExhausted: {
+      type: Boolean,
+      default: false       // true when max attempts hit — blocks further verification
     },
 
     attempts: {
@@ -44,14 +49,9 @@ const otpSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-/*
-  Ensure only ONE active OTP per identifier + purpose
-  Example:
-  - One signup OTP per email
-  - One reset_password OTP per email
-*/
+// one active OTP document per identifier + purpose
 otpSchema.index({ identifier: 1, purpose: 1 }, { unique: true });
 
-otpSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+// no TTL index — document never auto deleted, expiry handled manually
 
 module.exports = mongoose.model("Otp", otpSchema);
