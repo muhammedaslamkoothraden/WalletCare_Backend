@@ -4,7 +4,7 @@ const Account = require('../models/Account');
 
 /**
  * @desc    Fetch user balances and global summary
- * @route   GET /api/v1/accounts/:userId
+ * @route   GET /api/accounts/:userId
  */
 exports.getAccountBalances = async (req, res) => {
   try {

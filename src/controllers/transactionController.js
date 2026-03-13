@@ -40,7 +40,14 @@ exports.processTransaction = async (req, res, next) => {
     let reservedChange = new Decimal(0);
 
     // --- 3. LOGIC ENGINE (Keep your existing REVERSAL/INCOME/EXPENSE logic) ---
-    // ... logic remains unchanged ...
+
+if (transactionType === 'INCOME') {
+  balanceChange = safeAmount; // Positive change
+} else if (transactionType === 'EXPENSE') {
+  balanceChange = safeAmount.negated(); // Negative change
+} else if (transactionType === 'REVERSAL' && parentTransactionId) {
+  balanceChange = safeAmount; 
+}
 
     // --- 4. SAFETY GUARD ---
     const newAvailable = currentAvailable.plus(balanceChange);
