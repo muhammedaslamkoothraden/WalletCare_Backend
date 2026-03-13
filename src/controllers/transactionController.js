@@ -123,32 +123,32 @@ switch (action) {
     session.endSession();
   }
 };
-//  history
 exports.getHistory = async (req, res, next) => {
   try {
     const { userId } = req.params;
-    const { accountId, category, limit = 20 } = req.query;
+  
+    const { accountId, category, limit = 20, page = 1 } = req.query; 
 
     const query = { userId: new mongoose.Types.ObjectId(userId) };
-
-    if (accountId && mongoose.Types.ObjectId.isValid(accountId)) {
-      query.accountId = new mongoose.Types.ObjectId(accountId);
-    }
-
-    // ... existing category logic ...
+    // ... filtering logic ...
 
     const history = await Ledger.find(query)
-      .populate('accountId', 'name') // 🎯 FETCH the name from the Account model
+      .populate('accountId', 'name')
       .sort({ _id: -1 })
       .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit)) 
       .lean();
+
+    const totalCount = await Ledger.countDocuments(query);
 
     return res.status(200).json({
       success: true,
+      totalRecords: totalCount,
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(totalCount / limit),
       data: history.map(tx => ({ 
         ...tx, 
         amount: tx.amount.toString(),
-        // 🎯 Use the populated name, fallback to stored name, then "Unknown"
         accountName: tx.accountId?.name || tx.accountName || "Unknown Account"
       }))
     });
