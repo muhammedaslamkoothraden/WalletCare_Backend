@@ -20,20 +20,22 @@ const {
   validateResetPassword
 } = require("../validators/auth.validator");
 
+const { generalLimiter, strictLimiter } = require("../middlewares/rateLimit.middleware");
+
 // registration flow
-router.post("/register", validateRegister, validate, registerUser);
-router.post("/verify-email", validateVerifyEmail, validate, verifyEmailOtp);
+router.post("/register", strictLimiter, validateRegister, validate, registerUser);
+router.post("/verify-email", generalLimiter, validateVerifyEmail, validate, verifyEmailOtp);
 
 // login
-router.post("/login", validateLogin, validate, loginUser);
+router.post("/login", strictLimiter, validateLogin, validate, loginUser);
 
 // token management
-router.post("/refresh", refreshAccessToken);
+router.post("/refresh", generalLimiter, refreshAccessToken);
 
 // forgot password flow
 // resend OTP  → POST /api/otp/resend  { email, purpose: "reset_password" }
 // verify OTP  → POST /api/otp/verify  { email, otp, purpose: "reset_password" }
-router.post("/forgot-password", validateForgotPassword, validate, forgotPassword);
-router.post("/reset-password", validateResetPassword, validate, resetPassword);
+router.post("/forgot-password", strictLimiter, validateForgotPassword, validate, forgotPassword);
+router.post("/reset-password", generalLimiter, validateResetPassword, validate, resetPassword);
 
 module.exports = router;

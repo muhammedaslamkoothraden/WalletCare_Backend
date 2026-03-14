@@ -12,12 +12,14 @@ const {
   validateVerifyOtpPrivate
 } = require("../validators/otp.validator");
 
+const { generalLimiter } = require("../middlewares/rateLimit.middleware");
+
 // public routes — login page (email from body)
-router.post("/resend", validateResendOtp, validate, resendOtpHandler);
-router.post("/verify", validateVerifyOtp, validate, verifyOtpHandler);
+router.post("/resend", generalLimiter, validateResendOtp, validate, resendOtpHandler);
+router.post("/verify", generalLimiter, validateVerifyOtp, validate, verifyOtpHandler);
 
 // protected routes — inside app (email from token)
-router.post("/resend/private", protect, validateResendOtpPrivate, validate, resendOtpPrivate);
-router.post("/verify/private", protect, validateVerifyOtpPrivate, validate, verifyOtpPrivate);
+router.post("/resend/private", generalLimiter, protect, validateResendOtpPrivate, validate, resendOtpPrivate);
+router.post("/verify/private", generalLimiter, protect, validateVerifyOtpPrivate, validate, verifyOtpPrivate);
 
 module.exports = router;

@@ -19,19 +19,21 @@ const {
   validateDeleteAccount
 } = require("../validators/user.validator");
 
+const { generalLimiter, strictLimiter } = require("../middlewares/rateLimit.middleware");
+
 // profile routes
-router.get("/profile", getProfile);
-router.patch("/profile", validateUpdateProfile, validate, updateProfile);
+router.get("/profile", generalLimiter, getProfile);
+router.patch("/profile", generalLimiter, validateUpdateProfile, validate, updateProfile);
 
 // password routes
-router.patch("/password", validateChangePassword, validate, changePassword);
-router.post("/forgot-password", forgotPassword);
-router.post("/reset-password", validateResetPassword, validate, resetPassword);
+router.patch("/password", generalLimiter, validateChangePassword, validate, changePassword);
+router.post("/forgot-password", strictLimiter, forgotPassword);
+router.post("/reset-password", generalLimiter, validateResetPassword, validate, resetPassword);
 
 // logout
-router.post("/logout", logoutUser);
+router.post("/logout", generalLimiter, logoutUser);
 
 // delete account — soft delete, schedules permanent deletion after 14 days
-router.delete("/account", validateDeleteAccount, validate, deleteAccount);
+router.delete("/account", strictLimiter, validateDeleteAccount, validate, deleteAccount);
 
 module.exports = router;

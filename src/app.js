@@ -17,8 +17,8 @@ const { startDeletionJob } = require("./jobs/delete.job");
 const app = express();
 
 // global middlewares
-app.use(helmet());
-app.use(cors());
+app.use(helmet());           // secure HTTP headers
+app.use(cors());             // allow all origins for now — restrict in Week 12
 app.use(express.json());
 
 // public routes — no auth required
