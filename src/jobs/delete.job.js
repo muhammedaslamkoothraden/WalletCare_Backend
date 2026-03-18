@@ -2,7 +2,7 @@ const cron = require("node-cron");
 const { User, PendingUser } = require("../models/user");
 const Account = require("../models/Account");
 const Goal = require("../models/Goal");
-const Ledger = require("../models/ledger");
+const Ledger = require("../models/Ledger");
 const Otp = require("../models/otp");
 
 // runs every day at midnight

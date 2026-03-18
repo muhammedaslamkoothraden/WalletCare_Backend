@@ -9,7 +9,7 @@ const {
   resetPassword
 } = require("../controllers/auth.controller");
 
-const { verifyEmailOtp } = require("../controllers/verificationController");
+const { verifyEmailOtp } = require("../controllers/verification.controller");
 
 const validate = require("../middlewares/validate.middleware");
 const {

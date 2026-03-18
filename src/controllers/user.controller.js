@@ -2,9 +2,6 @@ const { User, PendingUser } = require("../models/user");
 const bcrypt = require("bcryptjs");
 const { createOtp, resendOtp } = require("../services/otp.service");
 const Otp = require("../models/otp");
-const Account = require("../models/Account");
-const Goal = require("../models/Goal");
-const Ledger = require("../models/ledger");
 const { verifyResetToken, generateAccessToken, generateRefreshToken } = require("../utils/token");
 const hashToken = require("../utils/hashToken");
 
@@ -29,9 +26,7 @@ exports.getProfile = async (req, res) => {
         role: user.role,
         isPremium: user.isPremium,
         isEmailVerified: user.isEmailVerified,
-        createdAt: user.createdAt,
-        // include deletion date if scheduled — frontend can show warning banner
-        scheduledDeletionAt: user.scheduledDeletionAt || null
+        createdAt: user.createdAt
       }
     });
 
@@ -127,7 +122,7 @@ exports.changePassword = async (req, res) => {
 
 
 // Forgot Password — inside app, user doesn't know current password
-// email from token — no need to send in body
+// email from token
 exports.forgotPassword = async (req, res) => {
   try {
 
@@ -166,7 +161,7 @@ exports.forgotPassword = async (req, res) => {
 };
 
 
-// Reset Password — inside app, requires resetToken from /otp/verify/private
+// Reset Password — inside app, 
 // generates new tokens — user stays logged in
 exports.resetPassword = async (req, res) => {
   try {
