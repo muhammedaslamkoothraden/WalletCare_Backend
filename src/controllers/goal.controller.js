@@ -7,7 +7,7 @@ const { calculateGoalDetails } = require("../services/goal.service");
 // CREATE GOAL
 exports.createGoal = async (req, res) => {
     try {
-        const { title, category, targetAmount, targetDate, accountId } = req.body;
+        const { title, description, category, targetAmount, targetDate, accountId } = req.body;
 
         if (!title || !category || !targetAmount || !targetDate || !accountId) {
             return res.status(400).json({ success: false, message: "All fields are required" });
@@ -26,9 +26,10 @@ exports.createGoal = async (req, res) => {
             userId: req.user.id,
             accountId,
             title,
+            description,
             category,
             targetAmount,
-            targetDate
+            targetDate,
         });
 
         res.status(201).json({ success: true, message: "Goal created successfully", data: goal });
