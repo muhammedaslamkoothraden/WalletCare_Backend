@@ -4,7 +4,7 @@ const app = require("./app");
 const connectDB = require("./config/db");
 
 // Background jobs
-require("./jobs/goalOverdue.job");
+require("./jobs/cron");
 const { startDeletionJob } = require("./jobs/delete.job");
 
 // Connect to MongoDB

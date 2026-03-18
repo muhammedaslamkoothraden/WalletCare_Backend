@@ -19,6 +19,16 @@ const goalSchema = new mongoose.Schema(
       ref: "Account",
       required: true
     },
+    transactionType: {
+      type: String,
+      enum: ["expense", "reserved"],
+      default: "expense"
+    },
+    directiontype: {
+      type: String,
+      enum: ["NORMAL", "GOAL_ALLOCATION", "GOAL_DEALLOCATION"],
+      default: "NORMAL"
+    },
 
     category: {
       type: String,
@@ -38,6 +48,11 @@ const goalSchema = new mongoose.Schema(
       required: true,
       min: 1,
     },
+    description: {
+        type: String,
+        trim: true,
+        maxlength: 500
+    },
 
     currentAmount: {
       type: Number,
@@ -52,14 +67,27 @@ const goalSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["active", "completed"],
+      enum: ["active", "completed", "overdue"],
       default: "active",
     },
+    reminderFrequency: {
+      type: String,
+      enum: ["daily", "weekly", "monthly", "none"],
+      default: "weekly"
+    },
+    sharedWith: [
+  {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User"
+  }
+]
   },
   { timestamps: true }
-  
+
 );
 goalSchema.index({ userId: 1, status: 1 });
 goalSchema.index({ userId: 1, targetDate: 1 });
+
+
 
 module.exports = mongoose.models.Goal || mongoose.model("Goal", goalSchema);

@@ -1,15 +1,14 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const protect = require('../middlewares/auth.middleware');
-const accountController = require('../controllers/AccountController');
+
+const accountController = require("../controllers/AccountController");
+const protect = require("../middlewares/auth.middleware");
 
 // Protect all account routes
 router.use(protect);
 
-// Create account (CASH or BANK)
-router.post('/create', accountController.createAccount);
-
-// 1. Get All Accounts (Dashboard View) and add accountId for specific account details
-router.get('/balances', accountController.getAccountBalances);
+router.post("/create", accountController.createAccount);
+router.get("/balances", accountController.getAccountBalances);
+router.put("/:accountId/primary", accountController.setAccountAsDefault);
 
 module.exports = router;

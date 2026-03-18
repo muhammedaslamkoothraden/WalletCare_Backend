@@ -1,6 +1,4 @@
 const express = require("express");
-require("dotenv").config();
-
 const cors = require("cors");
 const helmet = require("helmet");
 
@@ -10,33 +8,33 @@ const userRoutes = require("./routes/user.routes");
 const AccountRoutes = require("./routes/Account.routes");
 const transactionRoutes = require("./routes/transaction.routes");
 const goalRoutes = require("./routes/goal.routes");
+const analyticsRoutes = require("./routes/analytics.routes");
+const notificationRoutes = require("./routes/notification.routes");
 
 const authMiddleware = require("./middlewares/auth.middleware");
-const { startDeletionJob } = require("./jobs/delete.job");
 
 const app = express();
 
-// global middlewares
-app.use(helmet());           // secure HTTP headers
-app.use(cors());             // allow all origins for now — restrict in Week 12
+// Global middlewares
+app.use(helmet());
+app.use(cors());
 app.use(express.json());
 
-// public routes — no auth required
+// Health check
+app.get("/", (req, res) => {
+  res.send("WalletCare API is running...");
+});
+
+// Public routes
 app.use("/api/auth", authRoutes);
 app.use("/api/otp", otpRoutes);
 
-// protected routes — auth required
+// Protected routes
 app.use("/api/user", authMiddleware, userRoutes);
 app.use("/api/account", authMiddleware, AccountRoutes);
 app.use("/api/transaction", authMiddleware, transactionRoutes);
 app.use("/api/goals", authMiddleware, goalRoutes);
-
-// start background jobs
-startDeletionJob();
-
-// health check
-app.get("/", (req, res) => {
-  res.send("WalletCare API is running...");
-});
+app.use("/api/analytics", authMiddleware, analyticsRoutes);
+app.use("/api/notifications", authMiddleware, notificationRoutes);
 
 module.exports = app;
