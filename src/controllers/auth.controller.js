@@ -2,16 +2,27 @@ const { User, PendingUser } = require("../models/user");
 const { createOtp, resendOtp } = require("../services/otp.service");
 const Otp = require("../models/otp");
 const bcrypt = require("bcryptjs");
-
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken, verifyResetToken } = require("../utils/token");
 const hashToken = require("../utils/hashToken");
 
+// helper — handles resend errors consistently across routes
+const handleResendError = (resendError, res) => {
+  if (resendError.message === "COOLDOWN_ACTIVE") {
+    return res.status(429).json({ message: "Please wait 60 seconds before requesting another OTP." });
+  }
+  if (resendError.message === "MAX_RESEND_EXHAUSTED") {
+    return res.status(429).json({
+      message: "Maximum resend attempts reached. Please wait for the OTP to expire.",
+      retryAfter: resendError.retryAfter,
+    });
+  }
+  return null;
+};
 
-// Register
+// Register — creates pending user and sends OTP, respects cooldown on re-register
 exports.registerUser = async (req, res) => {
   try {
     const { name, email, password } = req.body;
-
     const normalizedEmail = email.toLowerCase().trim();
 
     // block if already a verified user
@@ -23,7 +34,6 @@ exports.registerUser = async (req, res) => {
     const existingPending = await PendingUser.findOne({ email: normalizedEmail });
 
     if (existingPending) {
-
       // update pending record with latest submitted data
       const hashedPassword = await bcrypt.hash(password, 10);
       await PendingUser.findOneAndUpdate(
@@ -39,22 +49,11 @@ exports.registerUser = async (req, res) => {
         try {
           await resendOtp(normalizedEmail, "signup");
         } catch (resendError) {
-
-          if (resendError.message === "COOLDOWN_ACTIVE") {
-            return res.status(429).json({ message: "Please wait 60 seconds before requesting another OTP." });
-          }
-
-          if (resendError.message === "MAX_RESEND_EXHAUSTED") {
-            return res.status(429).json({
-              message: "Maximum resend attempts reached. Please wait for the OTP to expire.",
-              retryAfter: resendError.retryAfter
-            });
-          }
-
+          const handled = handleResendError(resendError, res);
+          if (handled) return handled;
           throw resendError;
         }
       } else {
-        // no existing OTP — fresh start
         await createOtp(normalizedEmail, "signup");
       }
 
@@ -63,14 +62,7 @@ exports.registerUser = async (req, res) => {
 
     // no existing record — create pending user and send OTP
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    await PendingUser.create({
-      name,
-      email: normalizedEmail,
-      password: hashedPassword,
-      role: "user"
-    });
-
+    await PendingUser.create({ name, email: normalizedEmail, password: hashedPassword, role: "user" });
     await createOtp(normalizedEmail, "signup");
 
     return res.status(201).json({ message: "Registration successful. Please verify your email" });
@@ -85,37 +77,30 @@ exports.registerUser = async (req, res) => {
   }
 };
 
-
-// Login
+// Login — verifies credentials, auto-recovers soft-deleted accounts, issues tokens
 exports.loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
-
     const normalizedEmail = email.toLowerCase().trim();
 
     // explicitly select password since it is excluded in schema
     const user = await User.findOne({ email: normalizedEmail }).select("+password");
 
     // prevent user enumeration — generic message for missing user
-    if (!user) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
+    if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
     if (!user.isEmailVerified) {
       return res.status(403).json({ message: "Please verify your email before logging in" });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
+    if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
 
     // auto recover — if account was scheduled for deletion, cancel it silently
     if (user.scheduledDeletionAt) {
       await User.findByIdAndUpdate(user._id, { scheduledDeletionAt: null });
     }
 
-    // generate tokens via utils — no raw jwt.sign calls here
     const accessToken = generateAccessToken(user._id, user.role);
     const refreshToken = generateRefreshToken(user._id);
 
@@ -131,8 +116,8 @@ exports.loginUser = async (req, res) => {
         email: user.email,
         role: user.role,
         isPremium: user.isPremium,
-        isEmailVerified: user.isEmailVerified
-      }
+        isEmailVerified: user.isEmailVerified,
+      },
     });
 
   } catch (error) {
@@ -141,12 +126,10 @@ exports.loginUser = async (req, res) => {
   }
 };
 
-
-// Forgot Password — send OTP to email (login page)
+// Forgot Password — sends OTP to email, generic response to prevent email enumeration
 exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
-
     const normalizedEmail = email.toLowerCase().trim();
 
     // generic response — never reveal whether email exists
@@ -162,22 +145,11 @@ exports.forgotPassword = async (req, res) => {
       try {
         await resendOtp(normalizedEmail, "reset_password");
       } catch (resendError) {
-
-        if (resendError.message === "COOLDOWN_ACTIVE") {
-          return res.status(429).json({ message: "Please wait 60 seconds before requesting another OTP." });
-        }
-
-        if (resendError.message === "MAX_RESEND_EXHAUSTED") {
-          return res.status(429).json({
-            message: "Maximum resend attempts reached. Please wait for the OTP to expire.",
-            retryAfter: resendError.retryAfter
-          });
-        }
-
+        const handled = handleResendError(resendError, res);
+        if (handled) return handled;
         throw resendError;
       }
     } else {
-      // no existing OTP — fresh start
       await createOtp(normalizedEmail, "reset_password");
     }
 
@@ -189,13 +161,11 @@ exports.forgotPassword = async (req, res) => {
   }
 };
 
-
 // Reset Password — requires resetToken from POST /api/otp/verify
 exports.resetPassword = async (req, res) => {
   try {
     const { resetToken, newPassword } = req.body;
 
-    // verify reset token
     let decoded;
     try {
       decoded = verifyResetToken(resetToken);
@@ -212,9 +182,7 @@ exports.resetPassword = async (req, res) => {
     }
 
     const user = await User.findById(decoded.userId).select("+password");
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
+    if (!user) return res.status(404).json({ message: "User not found" });
 
     // prevent reusing same password
     const isSame = await bcrypt.compare(newPassword, user.password);
@@ -225,10 +193,7 @@ exports.resetPassword = async (req, res) => {
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
     // save new password + clear refresh token — forces re-login on all devices
-    await User.findByIdAndUpdate(decoded.userId, {
-      password: hashedPassword,
-      refreshToken: null
-    });
+    await User.findByIdAndUpdate(decoded.userId, { password: hashedPassword, refreshToken: null });
 
     return res.status(200).json({ message: "Password reset successfully. Please login again." });
 
@@ -238,8 +203,7 @@ exports.resetPassword = async (req, res) => {
   }
 };
 
-
-// Refresh Access Token
+// Refresh Access Token — atomic token rotation, detects replay attacks
 exports.refreshAccessToken = async (req, res) => {
   try {
     const { refreshToken } = req.body;
@@ -255,8 +219,6 @@ exports.refreshAccessToken = async (req, res) => {
     }
 
     const hashedToken = hashToken(refreshToken);
-
-    // generate new refresh token before atomic swap
     const newRefreshToken = generateRefreshToken(decoded.userId);
 
     // atomic swap — find by old hash, replace with new hash in one query
@@ -273,12 +235,12 @@ exports.refreshAccessToken = async (req, res) => {
       return res.status(401).json({ message: "Refresh token reuse detected. Please login again." });
     }
 
-    // generate access token using role from DB doc — decoded has no role
+    // generate access token using role from DB — decoded token has no role
     const newAccessToken = generateAccessToken(user._id, user.role);
 
     return res.status(200).json({
       accessToken: newAccessToken,
-      refreshToken: newRefreshToken  // client must save this — old one is now dead
+      refreshToken: newRefreshToken, // client must save this — old one is now dead
     });
 
   } catch (error) {

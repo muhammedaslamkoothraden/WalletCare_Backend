@@ -1,6 +1,6 @@
 const jwt = require("jsonwebtoken");
 
-// short-lived — contains userId and role, used to access protected routes
+// Access token — short-lived, contains userId and role
 const generateAccessToken = (userId, role) => {
   return jwt.sign(
     { userId, role },
@@ -9,7 +9,7 @@ const generateAccessToken = (userId, role) => {
   );
 };
 
-// long-lived — minimal payload, used to rotate access tokens
+// Refresh token — long-lived, used to rotate access tokens
 const generateRefreshToken = (userId) => {
   return jwt.sign(
     { userId },
@@ -18,7 +18,7 @@ const generateRefreshToken = (userId) => {
   );
 };
 
-// short-lived — proves OTP was verified, used only for password reset flow
+// Reset token — proves OTP was verified, used only for password reset
 const generateResetToken = (userId) => {
   return jwt.sign(
     { userId, purpose: "reset_password" },
@@ -27,14 +27,20 @@ const generateResetToken = (userId) => {
   );
 };
 
-// verify refresh token — throws TokenExpiredError or JsonWebTokenError
+// Verify refresh token
 const verifyRefreshToken = (token) => {
   return jwt.verify(token, process.env.REFRESH_TOKEN_SECRET);
 };
 
-// verify reset token — throws TokenExpiredError or JsonWebTokenError
+// Verify reset token — purpose check handled in auth.middleware.js
 const verifyResetToken = (token) => {
   return jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
 };
 
-module.exports = { generateAccessToken, generateRefreshToken, generateResetToken, verifyRefreshToken, verifyResetToken };
+module.exports = {
+  generateAccessToken,
+  generateRefreshToken,
+  generateResetToken,
+  verifyRefreshToken,
+  verifyResetToken,
+};
