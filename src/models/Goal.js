@@ -26,8 +26,8 @@ const goalSchema = new mongoose.Schema(
     },
     directiontype: {
       type: String,
-      enum: ["NORMAL", "GOAL_ALLOCATION", "GOAL_DEALLOCATION"],
-      default: "NORMAL"
+      enum: ["STANDARD", "GOAL_ALLOCATION", "GOAL_DEALLOCATION"],
+      default: "STANDARD"
     },
 
     category: {
