@@ -3,7 +3,7 @@ const mongoose = require("mongoose");
 const authMiddleware = (req, res, next) => {
   try {
     // Temporary fake logged-in user
-    const fakeUserId = "69a7c2ee3b7e643684e7b2d0";
+    const fakeUserId = "69ba7cf91b5ea253b4397d37";
 
     req.user = {
       id: new mongoose.Types.ObjectId(fakeUserId)
