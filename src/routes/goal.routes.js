@@ -14,7 +14,8 @@ const {
   getGoalPrediction,
   getAccountGoalTransitions, // The new history function
   getGoalById,
-  shareGoal
+  shareGoal,
+  getGoalHistory
 } = require("../controllers/goal.controller");
 
 // --- 1. Static & Summary Routes ---
@@ -25,6 +26,7 @@ router.get("/analytics/prediction", authMiddleware, getGoalPrediction);
 // --- 2. History Routes ---
 // Gets only ALLOCATIONS and DEALLOCATIONS for a specific account
 router.get("/account/:accountId/history", authMiddleware, getAccountGoalTransitions);
+router.get("/:id/history", authMiddleware, getGoalHistory); // Full history for a specific goal
 
 // --- 3. Collection Routes ---
 router.get("/", authMiddleware, goalLimiter, getGoals);
