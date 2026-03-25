@@ -14,7 +14,7 @@ function errRes(res, status, message) {
 
 exports.getAccountBalances = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId            = req.user.id;
     const { accountId, type } = req.query;
 
     const query = { userId, status: { $ne: 'CLOSED' } };
@@ -38,9 +38,9 @@ exports.getAccountBalances = async (req, res) => {
 
     if (!accounts.length) {
       return res.status(200).json({
-        success: true,
+        success:       true,
         globalSummary: { totalAvailable: '0.00', totalReserved: '0.00', netWorth: '0.00' },
-        accounts: [],
+        accounts:      [],
       });
     }
 
@@ -75,7 +75,7 @@ exports.getAccountBalances = async (req, res) => {
     });
 
     return res.status(200).json({
-      success: true,
+      success:       true,
       globalSummary: {
         totalAvailable: totals.available.toFixed(2),
         totalReserved:  totals.reserved.toFixed(2),
@@ -106,7 +106,7 @@ exports.createAccount = async (req, res) => {
     const cleanName = name?.trim();
 
     // Reject empty string explicitly — trim() turns '   ' into ''
-    // which would pass a simple !name check but is not a valid account name
+    // which would pass a simple !name check but is not a valid account name.
     if (!cleanName) {
       await session.abortTransaction();
       return errRes(res, 400, 'Account name is required');
@@ -139,18 +139,13 @@ exports.createAccount = async (req, res) => {
 
     if (error.code === 11000) {
       // Two distinct duplicate key scenarios share the same error code:
-      // 1. { userId, _normalizedName } — user already has an account with this name
-      // 2. { userId, isDefault: true } — concurrent request already set a default
-      //    (partial unique index on the schema prevents two isDefault: true per user)
+      // 1. { userId, _normalizedName } — user already has an account with this name.
+      // 2. { userId, isDefault: true } — concurrent request already set a default.
       const isNameConflict    = error.message?.includes('_normalizedName');
       const isDefaultConflict = error.message?.includes('isDefault');
 
-      if (isNameConflict) {
-        return errRes(res, 409, 'An account with this name already exists');
-      }
-      if (isDefaultConflict) {
-        return errRes(res, 409, 'A default account was already created — please retry');
-      }
+      if (isNameConflict)    return errRes(res, 409, 'An account with this name already exists');
+      if (isDefaultConflict) return errRes(res, 409, 'A default account was already created — please retry');
 
       return errRes(res, 409, 'Duplicate account entry');
     }
@@ -205,7 +200,7 @@ exports.setAccountAsDefault = async (req, res) => {
 
     // Partial unique index on { userId, isDefault: true } blocks a second
     // concurrent request from setting a different account as default
-    // simultaneously — surface as a clear conflict rather than a 500
+    // simultaneously — surface as a clear conflict rather than a 500.
     if (error.code === 11000) {
       return errRes(res, 409, 'Another account was set as default simultaneously — please retry');
     }
