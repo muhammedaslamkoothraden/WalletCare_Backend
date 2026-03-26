@@ -29,6 +29,10 @@ function assertString(value, fieldName, opts = {}) {
     throw new StringValidationError(`${fieldName} is required`);
   }
 
+  if (!required && trimmed.length === 0) {
+    return null;
+  }
+
   if (maxLength && trimmed.length > maxLength) {
     throw new StringValidationError(
       `${fieldName} cannot exceed ${maxLength} characters`
@@ -45,7 +49,7 @@ function assertString(value, fieldName, opts = {}) {
 class StringValidationError extends Error {
   constructor(message) {
     super(message);
-    this.name       = 'StringValidationError';
+    this.name = 'StringValidationError';
     this.statusCode = 400;
   }
 }

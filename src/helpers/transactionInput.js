@@ -29,15 +29,20 @@ function sanitizeOptionalPartyName(partyName) {
  * Throws with the same user-facing messages used across controllers/services.
  */
 function parseAmount(amount) {
+  if (amount === null || amount === undefined) {
+    throw new Error('Amount is required');
+  }
+
   try {
     const safeAmount = new Decimal(amount.toString());
     if (safeAmount.lessThanOrEqualTo(0)) throw new Error('non-positive');
     if (safeAmount.decimalPlaces() > 2) throw new Error('precision');
-    return safeAmount;
+    return safeAmount.toFixed(2);
   } catch (e) {
     if (e.message === 'precision') {
       throw new Error('Amount cannot have more than 2 decimal places');
     }
+    if (e.message === 'Amount is required') throw e;
     throw new Error('Amount must be a valid number greater than 0');
   }
 }

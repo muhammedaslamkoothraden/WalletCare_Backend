@@ -55,7 +55,7 @@ function errRes(res, status, message) {
 }
 
 function toDecimal128(decimalValue) {
-  return mongoose.Types.Decimal128.fromString(decimalValue.toFixed(2));
+  return mongoose.Types.Decimal128.fromString(decimalValue);
 }
 
 function duplicateResponse(res, ledgerDoc, accountDoc) {
@@ -72,35 +72,38 @@ function duplicateResponse(res, ledgerDoc, accountDoc) {
 
 exports.processTransaction = async (req, res, next) => {
   const userId = req.user.id;
-  const {
-    accountId, amount, transactionType,
-    direction, category, description,
-    idempotencyKey, parentTransactionId,
-    linkedAccountId,
-  } = req.body;
 
-  // ── Step 1: Required field fast-exit ──────────────────────────────────────
-  // Runs before sanitization so the user gets the most relevant error first.
-  // e.g. if both accountId and category are missing, they see "accountId is
-  // required" not "category is required" from assertString.
-  const missingField = REQUIRED_FIELDS.find((f) => !req.body[f]);
-  if (missingField) return errRes(res, 400, `${missingField} is required`);
-
-  // ── Step 2: Sanitize string fields ────────────────────────────────────────
-  // assertString rejects non-string types (e.g. objects like { "$gt": "" }),
-  // trims whitespace, enforces maxLength, and strips ASCII control characters
-  // (null bytes, newlines, tabs) that could corrupt stored data or inject
-  // fake lines into logs.
-  let safeCategory, safeDescription;
+  // ── Step 1: Input Isolation & Strict Sanitization ──────────────────────────
+  let input;
   try {
-    safeCategory = sanitizeCategory(category);
-    safeDescription = sanitizeOptionalDescription(description);
-  } catch (err) {
-    if (err instanceof StringValidationError) return errRes(res, 400, err.message);
-    throw err;
+    const missingField = REQUIRED_FIELDS.find((f) => !req.body[f]);
+    if (missingField) throw new Error(`${missingField} is required`);
+
+    input = {
+      accountId: req.body.accountId,
+      amount: parseAmount(req.body.amount),
+      transactionType: req.body.transactionType,
+      direction: req.body.direction,
+      category: sanitizeCategory(req.body.category),
+      description: sanitizeOptionalDescription(req.body.description),
+      idempotencyKey: assertString(req.body.idempotencyKey, 'idempotencyKey', { maxLength: 128 }),
+      parentTransactionId: req.body.parentTransactionId,
+      linkedAccountId: req.body.linkedAccountId,
+    };
+
+    if (input.idempotencyKey.length < 8) {
+      throw new StringValidationError('idempotencyKey must be at least 8 characters');
+    }
+  } catch (error) {
+    return errRes(res, 400, error.message);
   }
 
-  // ── Step 3: Structural validation ─────────────────────────────────────────
+  const {
+    accountId, amount: safeAmount, transactionType, direction, category: safeCategory,
+    description: safeDescription, idempotencyKey, parentTransactionId, linkedAccountId
+  } = input;
+
+  // ── Step 2: Structural validation ─────────────────────────────────────────
   if (!mongoose.Types.ObjectId.isValid(accountId))
     return errRes(res, 400, 'Invalid accountId');
   if (linkedAccountId && !mongoose.Types.ObjectId.isValid(linkedAccountId))
@@ -116,13 +119,6 @@ exports.processTransaction = async (req, res, next) => {
   const allowedTypes = VALID_DIRECTION_TYPE_COMBINATIONS.get(direction);
   if (!allowedTypes.has(transactionType)) {
     return errRes(res, 400, `transactionType '${transactionType}' is not valid for direction '${direction}'. Allowed: ${[...allowedTypes].join(', ')}`);
-  }
-
-  let safeAmount;
-  try {
-    safeAmount = parseAmount(amount);
-  } catch (e) {
-    return errRes(res, 400, e.message);
   }
 
   if (TRANSFER_DIRECTIONS.has(direction) && !linkedAccountId) {
@@ -193,10 +189,10 @@ exports.processTransaction = async (req, res, next) => {
         }
 
         const parentAmount = new Decimal(parentTx.amount.toString());
-        if (!safeAmount.equals(parentAmount)) {
+        if (!new Decimal(safeAmount).equals(parentAmount)) {
           await session.abortTransaction();
           return errRes(res, 400,
-            `Reversal amount (${safeAmount.toFixed(2)}) must match original transaction amount (${parentAmount.toFixed(2)})`
+            `Reversal amount (${safeAmount}) must match original transaction amount (${parentAmount.toFixed(2)})`
           );
         }
 
@@ -318,15 +314,34 @@ exports.processTransaction = async (req, res, next) => {
 
 exports.accountTransfer = async (req, res, next) => {
   const userId = req.user.id;
-  const {
-    fromAccountId, toAccountId, amount,
-    category, idempotencyKey, description,
-  } = req.body;
 
-  // ── Step 1: Required field fast-exit ──────────────────────────────────────
-  const missing = ['fromAccountId', 'toAccountId', 'amount', 'category', 'idempotencyKey']
-    .find((f) => !req.body[f]);
-  if (missing) return errRes(res, 400, `${missing} is required`);
+  // ── Step 1: Input Isolation & Strict Sanitization ──────────────────────────
+  let input;
+  try {
+    const missing = ['fromAccountId', 'toAccountId', 'amount', 'category', 'idempotencyKey']
+      .find((f) => !req.body[f]);
+    if (missing) throw new Error(`${missing} is required`);
+
+    input = {
+      fromAccountId: req.body.fromAccountId,
+      toAccountId: req.body.toAccountId,
+      amount: parseAmount(req.body.amount),
+      category: sanitizeCategory(req.body.category),
+      description: sanitizeOptionalDescription(req.body.description),
+      idempotencyKey: assertString(req.body.idempotencyKey, 'idempotencyKey', { maxLength: 128 }),
+    };
+
+    if (input.idempotencyKey.length < 8) {
+      throw new StringValidationError('idempotencyKey must be at least 8 characters');
+    }
+  } catch (error) {
+    return errRes(res, 400, error.message);
+  }
+
+  const {
+    fromAccountId, toAccountId, amount: safeAmount,
+    category: safeCategory, description: safeDescription, idempotencyKey
+  } = input;
 
   // ── Step 2: ObjectId validation ───────────────────────────────────────────
   if (!mongoose.Types.ObjectId.isValid(fromAccountId))
@@ -336,31 +351,6 @@ exports.accountTransfer = async (req, res, next) => {
 
   if (fromAccountId.toString() === toAccountId.toString()) {
     return errRes(res, 400, 'fromAccountId and toAccountId must not be the same account');
-  }
-
-  // ── Step 3: idempotencyKey validation ─────────────────────────────────────
-  if (typeof idempotencyKey !== 'string' || idempotencyKey.length < 8 || idempotencyKey.length > 128) {
-    return errRes(res, 400, 'idempotencyKey must be between 8 and 128 characters');
-  }
-
-  // ── Step 4: Sanitize string fields ────────────────────────────────────────
-  // Replaces the old manual typeof category check and adds sanitization for
-  // description, which was previously passed raw with only optional chaining.
-  let safeCategory, safeDescription;
-  try {
-    safeCategory = sanitizeCategory(category);
-    safeDescription = sanitizeOptionalDescription(description);
-  } catch (err) {
-    if (err instanceof StringValidationError) return errRes(res, 400, err.message);
-    throw err;
-  }
-
-  // ── Step 5: Amount validation ─────────────────────────────────────────────
-  let safeAmount;
-  try {
-    safeAmount = parseAmount(amount);
-  } catch (e) {
-    return errRes(res, 400, e.message);
   }
 
   try {
