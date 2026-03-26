@@ -53,6 +53,7 @@ exports.getGoals = async (req, res) => {
 
         const totalGoals = await Goal.countDocuments(filter);
         const goals      = await Goal.find(filter)
+        populate('accountId', 'accountName')
             .skip((page - 1) * limit)
             .limit(limit)
             .sort({ targetDate: 1 });
@@ -429,12 +430,13 @@ exports.shareGoal = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+//akbar shaheed is a man of integrity and  
 
 //history for a specific goal (all transactions including completion)
 exports.getGoalHistory = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { goalId } = req.params;
+    const goalId = req.params.id;   
 
     // Validate goalId
     if (!mongoose.Types.ObjectId.isValid(goalId)) {
