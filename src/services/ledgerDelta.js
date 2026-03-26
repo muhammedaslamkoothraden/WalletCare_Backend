@@ -1,0 +1,71 @@
+'use strict';
+
+const Decimal = require('decimal.js');
+
+function invertDelta({ balanceChange, reservedChange }) {
+  return {
+    balanceChange: balanceChange.negated(),
+    reservedChange: reservedChange.negated(),
+  };
+}
+
+/**
+ * Computes how a COMPLETED ledger entry changes cached balances.
+ *
+ * @param {string} direction
+ * @param {string} transactionType
+ * @param {Decimal} amount - positive amount
+ * @returns {{ balanceChange: Decimal, reservedChange: Decimal }}
+ */
+function computeBalanceDelta(direction, transactionType, amount) {
+  const zero = new Decimal(0);
+
+  switch (direction) {
+    case 'STANDARD':
+    case 'EDIT_REPLACEMENT': {
+      return {
+        balanceChange: transactionType === 'INCOME' ? amount : amount.negated(),
+        reservedChange: zero,
+      };
+    }
+
+    case 'GOAL_ALLOCATION':
+      return { balanceChange: amount.negated(), reservedChange: amount };
+
+    case 'GOAL_DEALLOCATION':
+      return { balanceChange: amount, reservedChange: amount.negated() };
+
+    case 'GOAL_COMPLETION':
+      return { balanceChange: zero, reservedChange: amount.negated() };
+
+    case 'ACCOUNT_TRANSFER_OUT':
+      return { balanceChange: amount.negated(), reservedChange: zero };
+
+    case 'ACCOUNT_TRANSFER_IN':
+      return { balanceChange: amount, reservedChange: zero };
+
+    default:
+      throw new Error(`Unrecognized direction in computeBalanceDelta: '${direction}'`);
+  }
+}
+
+function computeForwardDelta(direction, transactionType, amount) {
+  return computeBalanceDelta(direction, transactionType, amount);
+}
+
+function computeUndoDelta(direction, transactionType, amount) {
+  return invertDelta(computeBalanceDelta(direction, transactionType, amount));
+}
+
+function computeReversalDelta(parentDirection, parentTransactionType, amount) {
+  // A reversal entry negates what the parent entry did.
+  return computeUndoDelta(parentDirection, parentTransactionType, amount);
+}
+
+module.exports = {
+  computeBalanceDelta,
+  computeForwardDelta,
+  computeUndoDelta,
+  computeReversalDelta,
+};
+

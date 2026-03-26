@@ -19,7 +19,7 @@ const TRANSFER_DIRECTIONS = new Set([
 
 const IMMUTABLE_FIELDS = new Set([
   'amount', 'userId', 'accountId', 'transactionType',
-  'direction', 'idempotencyKey', 'parentTransactionId', 'category',
+  'direction', 'parentTransactionId', 'category', 'replacesTransactionId',
 ]);
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -41,7 +41,7 @@ const LedgerSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Goal',
       default: null,
-      index: true,   
+      index: true,
     },
 
     amount: {
@@ -76,6 +76,7 @@ const LedgerSchema = new mongoose.Schema(
         'ACCOUNT_TRANSFER_IN',
         'ACCOUNT_TRANSFER_OUT',
         'REVERSAL',
+        'EDIT_REPLACEMENT',
       ],
       required: true,
       default: 'STANDARD',
@@ -109,6 +110,11 @@ const LedgerSchema = new mongoose.Schema(
       ref: 'Ledger',
       default: null,
     },
+    replacesTransactionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Ledger',
+      default: null,
+    },
 
     partyName: {
       type: String,
@@ -129,20 +135,6 @@ const LedgerSchema = new mongoose.Schema(
       maxlength: [255, 'description cannot exceed 255 characters'],
     },
 
-    // ⚠️ IMPORTANT:
-    // These snapshots represent account state AFTER this transaction.
-    // Used for audit and debugging. Ledger remains the source of truth.
-    snapshotAvailable: {
-      type: mongoose.Schema.Types.Decimal128,
-      required: true,
-      get: (v) => (v ? v.toString() : '0.00'),
-    },
-
-    snapshotReserved: {
-      type: mongoose.Schema.Types.Decimal128,
-      required: true,
-      get: (v) => (v ? v.toString() : '0.00'),
-    },
 
     status: {
       type: String,
@@ -163,6 +155,7 @@ const LedgerSchema = new mongoose.Schema(
 LedgerSchema.index({ userId: 1, idempotencyKey: 1 }, { unique: true });
 LedgerSchema.index({ accountId: 1, createdAt: -1 });
 LedgerSchema.index({ userId: 1, _id: -1 });
+LedgerSchema.index({ replacesTransactionId: 1 },{ sparse: true });
 
 // Sparse index for reversal lookups by parent.
 LedgerSchema.index({ parentTransactionId: 1 }, { sparse: true });
@@ -179,6 +172,15 @@ LedgerSchema.index(
     sparse: true,
     partialFilterExpression: { direction: 'REVERSAL' },
     name: 'one_reversal_per_parent',
+  }
+);
+LedgerSchema.index(
+  { replacesTransactionId: 1, direction: 1 },
+  {
+    unique: true,
+    sparse: true,
+    partialFilterExpression: { direction: 'EDIT_REPLACEMENT' },
+    name: 'one_edit_per_original',
   }
 );
 
@@ -201,6 +203,9 @@ LedgerSchema.pre('save', async function () {
     if (this.transactionType === 'REVERSAL' && !this.parentTransactionId) {
       throw new Error('REVERSAL transactions must reference a parentTransactionId');
     }
+    if (this.direction === 'EDIT_REPLACEMENT' && !this.replacesTransactionId) {
+  throw new Error('EDIT_REPLACEMENT transactions must reference a replacesTransactionId');
+}
 
     return;
   }

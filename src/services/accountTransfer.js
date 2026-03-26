@@ -1,17 +1,17 @@
 'use strict';
 
-const crypto   = require('crypto');
+const crypto = require('crypto');
 const mongoose = require('mongoose');
-const Decimal  = require('decimal.js');
-const Ledger   = require('../models/ledger');
-const Account  = require('../models/Account');
+const Decimal = require('decimal.js');
+const Ledger = require('../models/ledger');
+const Account = require('../models/Account');
 
 // ─── Custom Error Class ───────────────────────────────────────────────────────
 
 class TransferError extends Error {
   constructor(message, statusCode = 400) {
     super(message);
-    this.name       = 'TransferError';
+    this.name = 'TransferError';
     this.statusCode = statusCode;
   }
 }
@@ -41,20 +41,20 @@ function deriveInboundKey(outboundKey) {
     .slice(0, 64);
 }
 
-function _duplicateTransferResponse(outEntry, inEntry) {
+function _duplicateTransferResponse(outEntry, inEntry, fromAccount, toAccount) {
   return {
     duplicate: true,
-    fromTxid:  outEntry?._id  ?? null,
-    toTxid:    inEntry?._id   ?? null,
+    fromTxid: outEntry?._id ?? null,
+    toTxid: inEntry?._id ?? null,
     from: {
-      accountId:        outEntry?.accountId         ?? null,
-      availableBalance: outEntry?.snapshotAvailable?.toString() ?? '0.00',
-      reservedBalance:  outEntry?.snapshotReserved?.toString()  ?? '0.00',
+      accountId: outEntry?.accountId ?? null,
+      availableBalance: fromAccount?.availableBalance?.toString() ?? '0.00',
+      reservedBalance: fromAccount?.reservedBalance?.toString() ?? '0.00',
     },
     to: {
-      accountId:        inEntry?.accountId          ?? null,
-      availableBalance: inEntry?.snapshotAvailable?.toString()  ?? '0.00',
-      reservedBalance:  inEntry?.snapshotReserved?.toString()   ?? '0.00',
+      accountId: inEntry?.accountId ?? null,
+      availableBalance: toAccount?.availableBalance?.toString() ?? '0.00',
+      reservedBalance: toAccount?.reservedBalance?.toString() ?? '0.00',
     },
   };
 }
@@ -90,8 +90,6 @@ async function initiateTransfer({
           .session(session)
           .lean();
 
-        await session.abortTransaction();
-
         // FIX: Use transferGroupId to detect a half-written transfer.
         // If the OUT leg exists but the IN leg is missing, the previous
         // attempt's session commit failed after staging the OUT write.
@@ -99,6 +97,7 @@ async function initiateTransfer({
         // but we surface it explicitly rather than returning a false
         // duplicate-success response.
         if (existingOut && !existingIn) {
+          await session.abortTransaction();
           throw new TransferError(
             'Transfer is in an inconsistent state — out leg exists but in leg is missing. ' +
             'Please contact support with transferGroupId: ' + existingOut.transferGroupId,
@@ -106,17 +105,23 @@ async function initiateTransfer({
           );
         }
 
-        return _duplicateTransferResponse(existingOut, existingIn);
+        const [fromAccount, toAccount] = await Promise.all([
+          Account.findOne({ _id: existingOut.accountId, userId }).session(session).lean(),
+          Account.findOne({ _id: existingIn.accountId, userId }).session(session).lean(),
+        ]);
+
+        await session.abortTransaction();
+        return _duplicateTransferResponse(existingOut, existingIn, fromAccount, toAccount);
       }
 
       // ── 2. Fetch both accounts in parallel ───────────────────────────────
       const [fromAccount, toAccount] = await Promise.all([
         Account.findOne({ _id: fromAccountId, userId }).session(session),
-        Account.findOne({ _id: toAccountId,   userId }).session(session),
+        Account.findOne({ _id: toAccountId, userId }).session(session),
       ]);
 
       if (!fromAccount) { await session.abortTransaction(); throw new TransferError('Source account not found', 404); }
-      if (!toAccount)   { await session.abortTransaction(); throw new TransferError('Destination account not found', 404); }
+      if (!toAccount) { await session.abortTransaction(); throw new TransferError('Destination account not found', 404); }
 
       // ── 3. Status guards ─────────────────────────────────────────────────
       if (fromAccount.status === 'CLOSED') { await session.abortTransaction(); throw new TransferError('Source account is closed', 400); }
@@ -139,15 +144,15 @@ async function initiateTransfer({
       // ── 4. Balance computation ───────────────────────────────────────────
       // FIX: Use Decimal.js throughout — do not mix raw Decimal128 objects
       // with Decimal.js arithmetic. Previously fromReserved/toReserved were
-      // typed as Decimal128 and written directly to snapshotReserved, bypassing
-      // the toFixed(2) normalization step applied to every other balance write.
+      // treated as already-normalized decimals in some code paths, which led
+      // to inconsistent precision handling.
       const fromAvailable = new Decimal(fromAccount.availableBalance.toString());
-      const fromReserved  = new Decimal(fromAccount.reservedBalance.toString());
-      const toAvailable   = new Decimal(toAccount.availableBalance.toString());
-      const toReserved    = new Decimal(toAccount.reservedBalance.toString());
+      const fromReserved = new Decimal(fromAccount.reservedBalance.toString());
+      const toAvailable = new Decimal(toAccount.availableBalance.toString());
+      const toReserved = new Decimal(toAccount.reservedBalance.toString());
 
       const newFromAvailable = fromAvailable.minus(safeAmount);
-      const newToAvailable   = toAvailable.plus(safeAmount);
+      const newToAvailable = toAvailable.plus(safeAmount);
 
       if (newFromAvailable.isNegative()) {
         await session.abortTransaction();
@@ -164,36 +169,32 @@ async function initiateTransfer({
       // ── 6. Build and write ledger entries ────────────────────────────────
       const outEntry = new Ledger({
         userId,
-        accountId:           fromAccount._id,
-        amount:              toDecimal128(safeAmount),
-        transactionType:     'TRANSFER',
-        direction:           'ACCOUNT_TRANSFER_OUT',
+        accountId: fromAccount._id,
+        amount: toDecimal128(safeAmount),
+        transactionType: 'TRANSFER',
+        direction: 'ACCOUNT_TRANSFER_OUT',
         category,
         description,
         idempotencyKey,                          // original client key — OUT leg
-        linkedAccountId:     toAccount._id,
+        linkedAccountId: toAccount._id,
         parentTransactionId: null,
-        status:              'COMPLETED',
+        status: 'COMPLETED',
         transferGroupId,                         // ← shared between both legs
-        snapshotAvailable:   toDecimal128(newFromAvailable),
-        snapshotReserved:    toDecimal128(fromReserved),   // FIX: now Decimal → toDecimal128
       });
 
       const inEntry = new Ledger({
         userId,
-        accountId:           toAccount._id,
-        amount:              toDecimal128(safeAmount),
-        transactionType:     'TRANSFER',
-        direction:           'ACCOUNT_TRANSFER_IN',
+        accountId: toAccount._id,
+        amount: toDecimal128(safeAmount),
+        transactionType: 'TRANSFER',
+        direction: 'ACCOUNT_TRANSFER_IN',
         category,
         description,
-        idempotencyKey:      inboundKey,          // FIX: hash-derived, not ':linked' suffix
-        linkedAccountId:     fromAccount._id,
+        idempotencyKey: inboundKey,          // FIX: hash-derived, not ':linked' suffix
+        linkedAccountId: fromAccount._id,
         parentTransactionId: null,
-        status:              'COMPLETED',
+        status: 'COMPLETED',
         transferGroupId,                          // ← same group as OUT leg
-        snapshotAvailable:   toDecimal128(newToAvailable),
-        snapshotReserved:    toDecimal128(toReserved),     // FIX: now Decimal → toDecimal128
       });
 
       await outEntry.save({ session });
@@ -201,7 +202,7 @@ async function initiateTransfer({
 
       // ── 7. Update cached balances ────────────────────────────────────────
       fromAccount.availableBalance = toDecimal128(newFromAvailable);
-      toAccount.availableBalance   = toDecimal128(newToAvailable);
+      toAccount.availableBalance = toDecimal128(newToAvailable);
 
       // Anti-deadlock: always acquire document locks in a consistent order
       // so two concurrent opposite transfers (A→B and B→A) cannot deadlock.
@@ -216,30 +217,30 @@ async function initiateTransfer({
       await session.commitTransaction();
 
       return {
-        duplicate:      false,
+        duplicate: false,
         transferGroupId,
-        fromTxid:       outEntry._id,
-        toTxid:         inEntry._id,
+        fromTxid: outEntry._id,
+        toTxid: inEntry._id,
         from: {
-          accountId:        fromAccount._id,
+          accountId: fromAccount._id,
           availableBalance: newFromAvailable.toFixed(2),
-          reservedBalance:  fromReserved.toFixed(2),
+          reservedBalance: fromReserved.toFixed(2),
         },
         to: {
-          accountId:        toAccount._id,
+          accountId: toAccount._id,
           availableBalance: newToAvailable.toFixed(2),
-          reservedBalance:  toReserved.toFixed(2),
+          reservedBalance: toReserved.toFixed(2),
         },
       };
 
     } catch (error) {
       if (session.inTransaction()) {
-        await session.abortTransaction().catch(() => {});
+        await session.abortTransaction().catch(() => { });
       }
 
       // ── Race condition recovery ──────────────────────────────────────────
-      const isVersionError  = error.name === 'VersionError';
-      const isWriteConflict = error.code === 112 || error.hasErrorLabels?.('TransientTransactionError');
+      const isVersionError = error.name === 'VersionError';
+      const isWriteConflict = error.code === 112 || error.hasErrorLabel?.('TransientTransactionError');
 
       if ((isVersionError || isWriteConflict) && attempt < MAX_RETRIES) {
         await new Promise(r => setTimeout(r, Math.random() * 50 * attempt));
@@ -253,8 +254,14 @@ async function initiateTransfer({
             Ledger.findOne({ userId, idempotencyKey }).lean(),
             Ledger.findOne({ userId, idempotencyKey: inboundKey }).lean(),
           ]);
-          if (winOut) return _duplicateTransferResponse(winOut, winIn);
-        } catch (_) {}
+          if (winOut) {
+            const [fromAccount, toAccount] = await Promise.all([
+              Account.findOne({ _id: winOut.accountId, userId }).lean(),
+              winIn ? Account.findOne({ _id: winIn.accountId, userId }).lean() : Promise.resolve(null),
+            ]);
+            return _duplicateTransferResponse(winOut, winIn, fromAccount, toAccount);
+          }
+        } catch (_) { }
 
         throw new TransferError('Idempotency key collision during retry', 409);
       }

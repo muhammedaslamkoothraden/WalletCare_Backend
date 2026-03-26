@@ -1,11 +1,19 @@
 'use strict';
 
 const mongoose = require('mongoose');
-const Decimal  = require('decimal.js');
-const Ledger   = require('../models/ledger');
-const Account  = require('../models/Account');
+const Decimal = require('decimal.js');
+const Ledger = require('../models/ledger');
+const Account = require('../models/Account');
+const { assertString, StringValidationError } = require('../helpers/sanitize');
+const {
+  sanitizeCategory,
+  sanitizeOptionalDescription,
+  parseAmount,
+} = require('../helpers/transactionInput');
 
 const { initiateTransfer, TransferError } = require('../services/accountTransfer');
+const editTransactionService = require('../services/Edittransaction');
+const { computeBalanceDelta, computeReversalDelta } = require('../services/ledgerDelta');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -25,13 +33,13 @@ const VALID_DIRECTIONS = Object.freeze(new Set([
 
 const VALID_DIRECTION_TYPE_COMBINATIONS = Object.freeze(
   new Map([
-    ['STANDARD',             Object.freeze(new Set(['INCOME', 'EXPENSE']))],
-    ['GOAL_ALLOCATION',      Object.freeze(new Set(['EXPENSE']))],
-    ['GOAL_DEALLOCATION',    Object.freeze(new Set(['INCOME']))],
-    ['GOAL_COMPLETION',      Object.freeze(new Set(['EXPENSE']))],
+    ['STANDARD', Object.freeze(new Set(['INCOME', 'EXPENSE']))],
+    ['GOAL_ALLOCATION', Object.freeze(new Set(['EXPENSE']))],
+    ['GOAL_DEALLOCATION', Object.freeze(new Set(['INCOME']))],
+    ['GOAL_COMPLETION', Object.freeze(new Set(['EXPENSE']))],
     ['ACCOUNT_TRANSFER_OUT', Object.freeze(new Set(['TRANSFER']))],
-    ['ACCOUNT_TRANSFER_IN',  Object.freeze(new Set(['TRANSFER']))],
-    ['REVERSAL',             Object.freeze(new Set(['REVERSAL']))],
+    ['ACCOUNT_TRANSFER_IN', Object.freeze(new Set(['TRANSFER']))],
+    ['REVERSAL', Object.freeze(new Set(['REVERSAL']))],
   ])
 );
 
@@ -50,43 +58,13 @@ function toDecimal128(decimalValue) {
   return mongoose.Types.Decimal128.fromString(decimalValue.toFixed(2));
 }
 
-// FIX: Default case now throws instead of silently returning zeros.
-// A direction reaching this function must have already passed the
-// VALID_DIRECTION_TYPE_COMBINATIONS check, so an unrecognized value
-// here signals a programmer error — silent zero-deltas would
-// corrupt balances without any visible failure.
-function computeBalanceDelta(direction, amount) {
-  const zero = new Decimal(0);
-  switch (direction) {
-    case 'GOAL_ALLOCATION':      return { balanceChange: amount.negated(), reservedChange: amount };
-    case 'GOAL_DEALLOCATION':    return { balanceChange: amount,           reservedChange: amount.negated() };
-    case 'GOAL_COMPLETION':      return { balanceChange: zero,             reservedChange: amount.negated() };
-    case 'ACCOUNT_TRANSFER_OUT': return { balanceChange: amount.negated(), reservedChange: zero };
-    case 'ACCOUNT_TRANSFER_IN':  return { balanceChange: amount,           reservedChange: zero };
-    default:
-      throw new Error(`Unrecognized direction in computeBalanceDelta: '${direction}'. This is a programmer error.`);
-  }
-}
-
-function computeReversalDelta(parentDirection, parentTransactionType, amount) {
-  if (parentDirection === 'STANDARD') {
-    if (parentTransactionType === 'INCOME')  return { balanceChange: amount.negated(), reservedChange: new Decimal(0) };
-    if (parentTransactionType === 'EXPENSE') return { balanceChange: amount,           reservedChange: new Decimal(0) };
-  }
-  const original = computeBalanceDelta(parentDirection, amount);
-  return {
-    balanceChange:  original.balanceChange.negated(),
-    reservedChange: original.reservedChange.negated(),
-  };
-}
-
-function duplicateResponse(res, ledgerDoc) {
+function duplicateResponse(res, ledgerDoc, accountDoc) {
   return res.status(409).json({
-    success:          true,
-    duplicate:        true,
-    txid:             ledgerDoc._id,
-    availableBalance: ledgerDoc.snapshotAvailable?.toString() ?? '0.00',
-    reservedBalance:  ledgerDoc.snapshotReserved?.toString()  ?? '0.00',
+    success: true,
+    duplicate: true,
+    txid: ledgerDoc._id,
+    availableBalance: accountDoc?.availableBalance?.toString() ?? '0.00',
+    reservedBalance: accountDoc?.reservedBalance?.toString() ?? '0.00',
   });
 }
 
@@ -101,9 +79,28 @@ exports.processTransaction = async (req, res, next) => {
     linkedAccountId,
   } = req.body;
 
+  // ── Step 1: Required field fast-exit ──────────────────────────────────────
+  // Runs before sanitization so the user gets the most relevant error first.
+  // e.g. if both accountId and category are missing, they see "accountId is
+  // required" not "category is required" from assertString.
   const missingField = REQUIRED_FIELDS.find((f) => !req.body[f]);
   if (missingField) return errRes(res, 400, `${missingField} is required`);
 
+  // ── Step 2: Sanitize string fields ────────────────────────────────────────
+  // assertString rejects non-string types (e.g. objects like { "$gt": "" }),
+  // trims whitespace, enforces maxLength, and strips ASCII control characters
+  // (null bytes, newlines, tabs) that could corrupt stored data or inject
+  // fake lines into logs.
+  let safeCategory, safeDescription;
+  try {
+    safeCategory = sanitizeCategory(category);
+    safeDescription = sanitizeOptionalDescription(description);
+  } catch (err) {
+    if (err instanceof StringValidationError) return errRes(res, 400, err.message);
+    throw err;
+  }
+
+  // ── Step 3: Structural validation ─────────────────────────────────────────
   if (!mongoose.Types.ObjectId.isValid(accountId))
     return errRes(res, 400, 'Invalid accountId');
   if (linkedAccountId && !mongoose.Types.ObjectId.isValid(linkedAccountId))
@@ -123,15 +120,9 @@ exports.processTransaction = async (req, res, next) => {
 
   let safeAmount;
   try {
-    safeAmount = new Decimal(amount.toString());
-    if (safeAmount.lessThanOrEqualTo(0)) throw new Error('non-positive');
-    if (safeAmount.decimalPlaces() > 2)  throw new Error('precision');
+    safeAmount = parseAmount(amount);
   } catch (e) {
-    return errRes(res, 400,
-      e.message === 'precision'
-        ? 'Amount cannot have more than 2 decimal places'
-        : 'Amount must be a valid number greater than 0'
-    );
+    return errRes(res, 400, e.message);
   }
 
   if (TRANSFER_DIRECTIONS.has(direction) && !linkedAccountId) {
@@ -159,8 +150,12 @@ exports.processTransaction = async (req, res, next) => {
         .session(session)
         .lean();
       if (existingLedger) {
+        const account = await Account
+          .findOne({ _id: existingLedger.accountId, userId })
+          .session(session)
+          .lean();
         await session.abortTransaction();
-        return duplicateResponse(res, existingLedger);
+        return duplicateResponse(res, existingLedger, account);
       }
 
       // ── Account fetch & guards ───────────────────────────────────────────
@@ -220,7 +215,7 @@ exports.processTransaction = async (req, res, next) => {
 
       // ── Balance delta computation ────────────────────────────────────────
       const currentAvailable = new Decimal(account.availableBalance.toString());
-      const currentReserved  = new Decimal(account.reservedBalance.toString());
+      const currentReserved = new Decimal(account.reservedBalance.toString());
 
       let balanceChange, reservedChange;
 
@@ -228,15 +223,12 @@ exports.processTransaction = async (req, res, next) => {
         ({ balanceChange, reservedChange } = computeReversalDelta(
           parentTx.direction, parentTx.transactionType, safeAmount
         ));
-      } else if (direction === 'STANDARD') {
-        balanceChange  = transactionType === 'INCOME' ? safeAmount : safeAmount.negated();
-        reservedChange = new Decimal(0);
       } else {
-        ({ balanceChange, reservedChange } = computeBalanceDelta(direction, safeAmount));
+        ({ balanceChange, reservedChange } = computeBalanceDelta(direction, transactionType, safeAmount));
       }
 
       const newAvailable = currentAvailable.plus(balanceChange);
-      const newReserved  = currentReserved.plus(reservedChange);
+      const newReserved = currentReserved.plus(reservedChange);
 
       if (newAvailable.isNegative()) {
         await session.abortTransaction();
@@ -251,38 +243,36 @@ exports.processTransaction = async (req, res, next) => {
       const [newLedger] = await Ledger.create([{
         userId,
         accountId,
-        amount:              toDecimal128(safeAmount),
+        amount: toDecimal128(safeAmount),
         transactionType,
         direction,
-        category,
-        description,
+        category: safeCategory,
+        description: safeDescription,
         idempotencyKey,
-        linkedAccountId:     linkedAccountId || null,
+        linkedAccountId: linkedAccountId || null,
         parentTransactionId: parentTransactionId || null,
-        status:              'COMPLETED',
-        snapshotAvailable:   toDecimal128(newAvailable),
-        snapshotReserved:    toDecimal128(newReserved),
+        status: 'COMPLETED',
       }], { session });
 
       // ── Update cached account balance ────────────────────────────────────
       account.availableBalance = toDecimal128(newAvailable);
-      account.reservedBalance  = toDecimal128(newReserved);
+      account.reservedBalance = toDecimal128(newReserved);
       await account.save({ session });
 
       await session.commitTransaction();
 
       return res.status(201).json({
-        success:          true,
-        txid:             newLedger._id,
+        success: true,
+        txid: newLedger._id,
         availableBalance: newAvailable.toFixed(2),
-        reservedBalance:  newReserved.toFixed(2),
+        reservedBalance: newReserved.toFixed(2),
       });
 
     } catch (error) {
-      if (session.inTransaction()) await session.abortTransaction().catch(() => {});
+      if (session.inTransaction()) await session.abortTransaction().catch(() => { });
 
-      const isVersionError   = error.name === 'VersionError';
-      const isWriteConflict  = error.code === 112 || error.hasErrorLabels?.('TransientTransactionError');
+      const isVersionError = error.name === 'VersionError';
+      const isWriteConflict = error.code === 112 || error.hasErrorLabel?.('TransientTransactionError');
 
       if ((isVersionError || isWriteConflict) && attempt < MAX_RETRIES) {
         await new Promise(r => setTimeout(r, Math.random() * 50 * attempt));
@@ -300,15 +290,20 @@ exports.processTransaction = async (req, res, next) => {
 
         try {
           const existing = await Ledger.findOne({ userId, idempotencyKey }).lean();
-          if (existing) return duplicateResponse(res, existing);
-        } catch (_) {}
+          if (existing) {
+            const account = await Account
+              .findOne({ _id: existing.accountId, userId })
+              .lean();
+            return duplicateResponse(res, existing, account);
+          }
+        } catch (_) { }
 
         return res.status(409).json({
-          success:          true,
-          duplicate:        true,
-          txid:             null,
+          success: true,
+          duplicate: true,
+          txid: null,
           availableBalance: '0.00',
-          reservedBalance:  '0.00',
+          reservedBalance: '0.00',
         });
       }
 
@@ -328,10 +323,12 @@ exports.accountTransfer = async (req, res, next) => {
     category, idempotencyKey, description,
   } = req.body;
 
+  // ── Step 1: Required field fast-exit ──────────────────────────────────────
   const missing = ['fromAccountId', 'toAccountId', 'amount', 'category', 'idempotencyKey']
     .find((f) => !req.body[f]);
   if (missing) return errRes(res, 400, `${missing} is required`);
 
+  // ── Step 2: ObjectId validation ───────────────────────────────────────────
   if (!mongoose.Types.ObjectId.isValid(fromAccountId))
     return errRes(res, 400, 'Invalid fromAccountId');
   if (!mongoose.Types.ObjectId.isValid(toAccountId))
@@ -341,25 +338,29 @@ exports.accountTransfer = async (req, res, next) => {
     return errRes(res, 400, 'fromAccountId and toAccountId must not be the same account');
   }
 
+  // ── Step 3: idempotencyKey validation ─────────────────────────────────────
   if (typeof idempotencyKey !== 'string' || idempotencyKey.length < 8 || idempotencyKey.length > 128) {
     return errRes(res, 400, 'idempotencyKey must be between 8 and 128 characters');
   }
 
-  if (typeof category !== 'string' || category.trim().length === 0 || category.trim().length > 50) {
-    return errRes(res, 400, 'category must be between 1 and 50 characters');
+  // ── Step 4: Sanitize string fields ────────────────────────────────────────
+  // Replaces the old manual typeof category check and adds sanitization for
+  // description, which was previously passed raw with only optional chaining.
+  let safeCategory, safeDescription;
+  try {
+    safeCategory = sanitizeCategory(category);
+    safeDescription = sanitizeOptionalDescription(description);
+  } catch (err) {
+    if (err instanceof StringValidationError) return errRes(res, 400, err.message);
+    throw err;
   }
 
+  // ── Step 5: Amount validation ─────────────────────────────────────────────
   let safeAmount;
   try {
-    safeAmount = new Decimal(amount.toString());
-    if (safeAmount.lessThanOrEqualTo(0)) throw new Error('non-positive');
-    if (safeAmount.decimalPlaces() > 2)  throw new Error('precision');
+    safeAmount = parseAmount(amount);
   } catch (e) {
-    return errRes(res, 400,
-      e.message === 'precision'
-        ? 'Amount cannot have more than 2 decimal places'
-        : 'Amount must be a valid number greater than 0'
-    );
+    return errRes(res, 400, e.message);
   }
 
   try {
@@ -368,9 +369,9 @@ exports.accountTransfer = async (req, res, next) => {
       fromAccountId,
       toAccountId,
       safeAmount,
-      category:    category.trim(),
+      category: safeCategory,
       idempotencyKey,
-      description: description?.trim() || null,
+      description: safeDescription,
     });
 
     if (result.duplicate) return res.status(409).json({ success: true, ...result });
@@ -398,7 +399,7 @@ exports.getHistory = async (req, res, next) => {
       if (!mongoose.Types.ObjectId.isValid(accountId))
         return errRes(res, 400, 'Invalid accountId');
 
-      // FIX: Verify the account belongs to this user before filtering by it.
+      // Verify the account belongs to this user before filtering by it.
       // Without this check, querying an accountId that belongs to another user
       // returns an empty array — leaking that the account does or does not exist.
       const accountExists = await Account.exists({ _id: accountId, userId });
@@ -407,10 +408,18 @@ exports.getHistory = async (req, res, next) => {
       query.accountId = new mongoose.Types.ObjectId(accountId);
     }
 
+    // ── Sanitize category query param ──────────────────────────────────────
+    // Query params carry the same injection risk as body params.
+    // assertString rejects non-strings, trims, and strips control characters.
     if (category) {
-      if (typeof category !== 'string' || category.trim().length === 0)
-        return errRes(res, 400, 'Invalid category filter');
-      query.category = category.trim();
+      let safeCategory;
+      try {
+        safeCategory = assertString(category, 'category', { maxLength: 50 });
+      } catch (err) {
+        if (err instanceof StringValidationError) return errRes(res, 400, err.message);
+        throw err;
+      }
+      query.category = safeCategory;
     }
 
     if (lastId) {
@@ -419,7 +428,7 @@ exports.getHistory = async (req, res, next) => {
       query._id = { $lt: new mongoose.Types.ObjectId(lastId) };
     }
 
-    const parsed      = parseInt(limit, 10);
+    const parsed = parseInt(limit, 10);
     const parsedLimit = Math.min(isNaN(parsed) || parsed < 1 ? 20 : parsed, 100);
 
     const history = await Ledger.find(query)
@@ -429,16 +438,21 @@ exports.getHistory = async (req, res, next) => {
       .lean();
 
     return res.status(200).json({
-      success:    true,
-      count:      history.length,
+      success: true,
+      count: history.length,
       nextCursor: history.length === parsedLimit ? history.at(-1)._id : null,
-      data:       history.map((tx) => ({
+      data: history.map((tx) => ({
         ...tx,
-        amount:      tx.amount.toString(),
+        amount: tx.amount.toString(),
         accountName: tx.accountId?.name || 'Unknown Account',
       })),
     });
   } catch (error) {
     next(error);
   }
+};
+
+// ─── 4. editTransaction ─────────────────────────────────────────────────────
+exports.editTransaction = async (req, res, next) => {
+  return editTransactionService.editTransaction(req, res, next);
 };
