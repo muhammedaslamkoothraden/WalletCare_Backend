@@ -1,15 +1,15 @@
 'use strict';
 
 const mongoose = require('mongoose');
-const Decimal  = require('decimal.js');
+const Decimal = require('decimal.js');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const VALID_TRANSITIONS = {
-  PENDING:   ['COMPLETED', 'FAILED'],
+  PENDING: ['COMPLETED', 'FAILED'],
   COMPLETED: ['VOIDED'],
-  FAILED:    [],
-  VOIDED:    [],
+  FAILED: [],
+  VOIDED: [],
 };
 
 const TRANSFER_DIRECTIONS = new Set([
@@ -27,21 +27,27 @@ const IMMUTABLE_FIELDS = new Set([
 const LedgerSchema = new mongoose.Schema(
   {
     userId: {
-      type:     mongoose.Schema.Types.ObjectId,
-      ref:      'User',
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
       required: true,
-      index:    true,
+      index: true,
     },
     accountId: {
-      type:     mongoose.Schema.Types.ObjectId,
-      ref:      'Account',
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Account',
       required: true,
+    },
+    goalId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Goal',
+      default: null,
+      index: true,   
     },
 
     amount: {
-      type:     mongoose.Schema.Types.Decimal128,
+      type: mongoose.Schema.Types.Decimal128,
       required: true,
-      get:      (v) => (v ? v.toString() : '0.00'),
+      get: (v) => (v ? v.toString() : '0.00'),
       validate: {
         validator: function (v) {
           try {
@@ -55,14 +61,14 @@ const LedgerSchema = new mongoose.Schema(
     },
 
     transactionType: {
-      type:     String,
-      enum:     ['INCOME', 'EXPENSE', 'TRANSFER', 'REVERSAL'],
+      type: String,
+      enum: ['INCOME', 'EXPENSE', 'TRANSFER', 'REVERSAL'],
       required: true,
     },
 
     direction: {
-      type:     String,
-      enum:     [
+      type: String,
+      enum: [
         'STANDARD',
         'GOAL_ALLOCATION',
         'GOAL_DEALLOCATION',
@@ -72,12 +78,12 @@ const LedgerSchema = new mongoose.Schema(
         'REVERSAL',
       ],
       required: true,
-      default:  'STANDARD',
+      default: 'STANDARD',
     },
 
     linkedAccountId: {
-      type:    mongoose.Schema.Types.ObjectId,
-      ref:     'Account',
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Account',
       default: null,
     },
 
@@ -85,41 +91,41 @@ const LedgerSchema = new mongoose.Schema(
     // Used to detect and surface half-written transfers during
     // idempotency recovery. Set to the same ObjectId on both legs.
     transferGroupId: {
-      type:    mongoose.Schema.Types.ObjectId,
+      type: mongoose.Schema.Types.ObjectId,
       default: null,
-      index:   true,
+      index: true,
     },
 
     idempotencyKey: {
-      type:      String,
-      required:  true,
-      trim:      true,
-      minlength: [8,   'idempotencyKey must be at least 8 characters'],
+      type: String,
+      required: true,
+      trim: true,
+      minlength: [8, 'idempotencyKey must be at least 8 characters'],
       maxlength: [128, 'idempotencyKey cannot exceed 128 characters'],
     },
 
     parentTransactionId: {
-      type:    mongoose.Schema.Types.ObjectId,
-      ref:     'Ledger',
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Ledger',
       default: null,
     },
 
     partyName: {
-      type:      String,
-      trim:      true,
+      type: String,
+      trim: true,
       maxlength: [100, 'partyName cannot exceed 100 characters'],
     },
 
     category: {
-      type:      String,
-      required:  true,
-      trim:      true,
+      type: String,
+      required: true,
+      trim: true,
       maxlength: [50, 'category cannot exceed 50 characters'],
     },
 
     description: {
-      type:      String,
-      trim:      true,
+      type: String,
+      trim: true,
       maxlength: [255, 'description cannot exceed 255 characters'],
     },
 
@@ -127,27 +133,27 @@ const LedgerSchema = new mongoose.Schema(
     // These snapshots represent account state AFTER this transaction.
     // Used for audit and debugging. Ledger remains the source of truth.
     snapshotAvailable: {
-      type:     mongoose.Schema.Types.Decimal128,
+      type: mongoose.Schema.Types.Decimal128,
       required: true,
-      get:      (v) => (v ? v.toString() : '0.00'),
+      get: (v) => (v ? v.toString() : '0.00'),
     },
 
     snapshotReserved: {
-      type:     mongoose.Schema.Types.Decimal128,
+      type: mongoose.Schema.Types.Decimal128,
       required: true,
-      get:      (v) => (v ? v.toString() : '0.00'),
+      get: (v) => (v ? v.toString() : '0.00'),
     },
 
     status: {
-      type:    String,
-      enum:    ['PENDING', 'COMPLETED', 'FAILED', 'VOIDED'],
+      type: String,
+      enum: ['PENDING', 'COMPLETED', 'FAILED', 'VOIDED'],
       default: 'COMPLETED',
     },
   },
   {
-    timestamps:            true,
-    toJSON:                { getters: true },
-    toObject:              { getters: true },
+    timestamps: true,
+    toJSON: { getters: true },
+    toObject: { getters: true },
     optimisticConcurrency: true,
   }
 );
@@ -169,10 +175,10 @@ LedgerSchema.index({ parentTransactionId: 1 }, { sparse: true });
 LedgerSchema.index(
   { parentTransactionId: 1, direction: 1 },
   {
-    unique:                true,
-    sparse:                true,
+    unique: true,
+    sparse: true,
     partialFilterExpression: { direction: 'REVERSAL' },
-    name:                  'one_reversal_per_parent',
+    name: 'one_reversal_per_parent',
   }
 );
 
