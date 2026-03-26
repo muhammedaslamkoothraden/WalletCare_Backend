@@ -121,6 +121,15 @@ AccountSchema.pre('save', async function () {
     }
   }
 
+  // ── Zero-balance closure rule ─────────────────────────────────────────────
+  if (this.isModified('status') && this.status === 'CLOSED') {
+    const available = new Decimal(this.availableBalance?.toString() || '0');
+    const reserved = new Decimal(this.reservedBalance?.toString() || '0');
+    if (!available.equals(0) || !reserved.equals(0)) {
+      throw new Error('Account can only be closed if both available and reserved balances are exactly 0.00');
+    }
+  }
+
   // ── Closed account guard ──────────────────────────────────────────────────
   // Allow metadata updates, block only balance changes
   if (
@@ -158,6 +167,74 @@ AccountSchema.pre('save', async function () {
   // ── Normalised name ───────────────────────────────────────────────────────
   if (this.isNew || this.isModified('name')) {
     this._normalizedName = this.name.toLowerCase();
+  }
+});
+
+// ─── Pre-update middleware ────────────────────────────────────────────────────
+
+AccountSchema.pre(['updateOne', 'findOneAndUpdate', 'updateMany'], async function () {
+  const update = this.getUpdate() || {};
+  const filter = this.getFilter();
+  const options = this.getOptions();
+
+  const targeted = new Set();
+
+  if (!Object.keys(update).some(k => k.startsWith('$'))) {
+    Object.keys(update).forEach(field => targeted.add(field));
+  } else {
+    for (const [op, payload] of Object.entries(update)) {
+      if (op.startsWith('$') && payload && typeof payload === 'object') {
+        for (const field of Object.keys(payload)) {
+          targeted.add(field);
+        }
+      }
+    }
+  }
+
+  for (const field of IMMUTABLE_FIELDS) {
+    if (targeted.has(field)) {
+      throw new Error(`'${field}' cannot be modified after account creation`);
+    }
+  }
+
+  const docs = await this.model.find(filter).session(options.session);
+
+  for (const doc of docs) {
+    const isBalanceModified = targeted.has('availableBalance') || targeted.has('reservedBalance');
+    const futureStatus = targeted.has('status') ? (update.$set?.status || update.status) : doc.status;
+
+    if (doc.status === 'FROZEN' && isBalanceModified) {
+      throw new Error('Balance cannot be changed on a frozen account');
+    }
+
+    if (doc.status === 'CLOSED' && isBalanceModified) {
+      throw new Error('Balance cannot be changed on a closed account');
+    }
+
+    let futureAvailable = new Decimal(doc.availableBalance?.toString() || '0');
+    if (update.$set?.availableBalance !== undefined) {
+      futureAvailable = new Decimal(update.$set.availableBalance.toString());
+    } else if (update.$inc?.availableBalance !== undefined) {
+      futureAvailable = futureAvailable.plus(update.$inc.availableBalance.toString());
+    } else if (update.availableBalance !== undefined) {
+      futureAvailable = new Decimal(update.availableBalance.toString());
+    }
+
+    let futureReserved = new Decimal(doc.reservedBalance?.toString() || '0');
+    if (update.$set?.reservedBalance !== undefined) {
+      futureReserved = new Decimal(update.$set.reservedBalance.toString());
+    } else if (update.$inc?.reservedBalance !== undefined) {
+      futureReserved = futureReserved.plus(update.$inc.reservedBalance.toString());
+    } else if (update.reservedBalance !== undefined) {
+      futureReserved = new Decimal(update.reservedBalance.toString());
+    }
+
+    if (futureAvailable.isNegative()) throw new Error('Available balance cannot be negative');
+    if (futureReserved.isNegative()) throw new Error('Reserved balance cannot be negative');
+
+    if (futureStatus === 'CLOSED' && (!futureAvailable.equals(0) || !futureReserved.equals(0))) {
+      throw new Error('Account can only be closed if both available and reserved balances are exactly 0.00');
+    }
   }
 });
 
