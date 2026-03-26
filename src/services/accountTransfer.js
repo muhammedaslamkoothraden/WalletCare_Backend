@@ -19,7 +19,7 @@ class TransferError extends Error {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function toDecimal128(decimalValue) {
-  return mongoose.Types.Decimal128.fromString(decimalValue.toFixed(2));
+  return mongoose.Types.Decimal128.fromString(decimalValue);
 }
 
 // FIX: Derive the transfer-in idempotency key from a SHA-256 hash of the
@@ -83,6 +83,11 @@ async function initiateTransfer({
         .findOne({ userId, idempotencyKey })
         .session(session)
         .lean();
+
+      if (existingOut && existingOut.transactionType !== 'TRANSFER') {
+        await session.abortTransaction();
+        throw new TransferError('Idempotency key already used for a non-transfer transaction', 409);
+      }
 
       if (existingOut) {
         const existingIn = await Ledger
@@ -197,8 +202,10 @@ async function initiateTransfer({
         transferGroupId,                          // ← same group as OUT leg
       });
 
-      await outEntry.save({ session });
-      await inEntry.save({ session });
+      await Promise.all([
+        outEntry.save({ session }),
+        inEntry.save({ session })
+      ]);
 
       // ── 7. Update cached balances ────────────────────────────────────────
       fromAccount.availableBalance = toDecimal128(newFromAvailable);

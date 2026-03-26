@@ -1,11 +1,11 @@
 'use strict';
 
 const mongoose = require('mongoose');
-const crypto   = require('crypto');
-const Decimal  = require('decimal.js');
-const Ledger   = require('../models/ledger');
-const Account  = require('../models/Account');
-const { StringValidationError } = require('../helpers/sanitize');
+const crypto = require('crypto');
+const Decimal = require('decimal.js');
+const Ledger = require('../models/ledger');
+const Account = require('../models/Account');
+const { StringValidationError, assertString } = require('../helpers/sanitize');
 const {
   sanitizeCategory,
   sanitizeOptionalDescription,
@@ -29,11 +29,11 @@ const NON_EDITABLE_DIRECTIONS = new Set([
 
 // What transactionTypes are valid for each direction
 const VALID_DIRECTION_TYPE_COMBINATIONS = new Map([
-  ['STANDARD',          new Set(['INCOME', 'EXPENSE'])],
-  ['GOAL_ALLOCATION',   new Set(['EXPENSE'])],
+  ['STANDARD', new Set(['INCOME', 'EXPENSE'])],
+  ['GOAL_ALLOCATION', new Set(['EXPENSE'])],
   ['GOAL_DEALLOCATION', new Set(['INCOME'])],
-  ['GOAL_COMPLETION',   new Set(['EXPENSE'])],
-  ['EDIT_REPLACEMENT',  new Set(['INCOME', 'EXPENSE'])],
+  ['GOAL_COMPLETION', new Set(['EXPENSE'])],
+  ['EDIT_REPLACEMENT', new Set(['INCOME', 'EXPENSE'])],
 ]);
 
 const MAX_RETRIES = 3;
@@ -43,7 +43,7 @@ const MAX_RETRIES = 3;
 class EditTransactionError extends Error {
   constructor(message, statusCode = 500) {
     super(message);
-    this.name       = 'EditTransactionError';
+    this.name = 'EditTransactionError';
     this.statusCode = statusCode;
   }
 }
@@ -51,7 +51,8 @@ class EditTransactionError extends Error {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function toDecimal128(decimalValue) {
-  return mongoose.Types.Decimal128.fromString(decimalValue.toFixed(2));
+  // Using .toString() guarantees it works for both string literals and Decimal.js objects
+  return mongoose.Types.Decimal128.fromString(decimalValue.toString());
 }
 
 // ─── Core service ─────────────────────────────────────────────────────────────
@@ -89,8 +90,12 @@ async function editTransaction(params) {
   // response. Previously this block incorrectly referenced `res`, which
   // does not exist in a pure service function — causing a ReferenceError
   // at runtime and a 500 response instead of a 400.
-  let safeCategory, safeDescription, safePartyName;
+  let safeCategory, safeDescription, safePartyName, safeIdempotencyKey;
   try {
+    safeIdempotencyKey = assertString(editIdempotencyKey, 'editIdempotencyKey', { maxLength: 114 });
+    if (safeIdempotencyKey.length < 8) {
+      throw new StringValidationError('editIdempotencyKey must be at least 8 characters');
+    }
     safeCategory = sanitizeCategory(category);
     safeDescription = sanitizeOptionalDescription(description);
     safePartyName = sanitizeOptionalPartyName(partyName);
@@ -103,17 +108,6 @@ async function editTransaction(params) {
 
   if (!mongoose.Types.ObjectId.isValid(originalTxId)) {
     throw new EditTransactionError('Invalid originalTxId', 400);
-  }
-
-  if (
-    typeof editIdempotencyKey !== 'string' ||
-    editIdempotencyKey.length < 8  ||
-    editIdempotencyKey.length > 114
-  ) {
-    throw new EditTransactionError(
-      'editIdempotencyKey must be between 8 and 114 characters',
-      400
-    );
   }
 
   if (NON_EDITABLE_DIRECTIONS.has(direction)) {
@@ -149,8 +143,8 @@ async function editTransaction(params) {
   // Deterministic sub-keys — client supplies one key, we derive both.
   // ':new'  → idempotency key for the replacement entry
   // ':void' → idempotency key stamped on the voided original
-  const voidIdempotencyKey = crypto.createHash('sha256').update(`edit-void-leg:${editIdempotencyKey}`).digest('hex');
-  const newIdempotencyKey  = crypto.createHash('sha256').update(`edit-new-leg:${editIdempotencyKey}`).digest('hex');
+  const voidIdempotencyKey = crypto.createHash('sha256').update(`edit-void-leg:${safeIdempotencyKey}`).digest('hex');
+  const newIdempotencyKey = crypto.createHash('sha256').update(`edit-new-leg:${safeIdempotencyKey}`).digest('hex');
 
   // ── Retry loop ─────────────────────────────────────────────────────────────
 
@@ -175,11 +169,11 @@ async function editTransaction(params) {
           .lean();
         await session.abortTransaction();
         return {
-          duplicate:        true,
+          duplicate: true,
           originalTxId,
-          replacementTxId:  existingReplacement._id.toString(),
+          replacementTxId: existingReplacement._id.toString(),
           availableBalance: account?.availableBalance?.toString() ?? '0.00',
-          reservedBalance:  account?.reservedBalance?.toString()  ?? '0.00',
+          reservedBalance: account?.reservedBalance?.toString() ?? '0.00',
         };
       }
 
@@ -230,7 +224,7 @@ async function editTransaction(params) {
       }
 
       const currentAvailable = new Decimal(account.availableBalance.toString());
-      const currentReserved  = new Decimal(account.reservedBalance.toString());
+      const currentReserved = new Decimal(account.reservedBalance.toString());
 
       // ── Step 4: Undo delta ───────────────────────────────────────────────
       // Computes how much to add/subtract to reverse the original entry.
@@ -246,7 +240,7 @@ async function editTransaction(params) {
       // ── Step 6: Net balance ──────────────────────────────────────────────
       // Apply both deltas together — undo the old, apply the new.
       const netAvailable = currentAvailable.plus(undoBalance).plus(newBalance);
-      const netReserved  = currentReserved.plus(undoReserved).plus(newReserved);
+      const netReserved = currentReserved.plus(undoReserved).plus(newReserved);
 
       if (netAvailable.isNegative()) {
         await session.abortTransaction();
@@ -262,19 +256,19 @@ async function editTransaction(params) {
       // the session rolls back with the original still COMPLETED.
       const [replacement] = await Ledger.create([{
         userId,
-        accountId:             original.accountId,
-        goalId:                original.goalId ?? null,
-        amount:                toDecimal128(safeAmount),
+        accountId: original.accountId,
+        goalId: original.goalId ?? null,
+        amount: toDecimal128(safeAmount),
         transactionType,
-        direction:             'EDIT_REPLACEMENT', // always set by system
-        category:              safeCategory,
-        description:           safeDescription,
-        partyName:             safePartyName,
-        idempotencyKey:        newIdempotencyKey,
+        direction: 'EDIT_REPLACEMENT', // always set by system
+        category: safeCategory,
+        description: safeDescription,
+        partyName: safePartyName,
+        idempotencyKey: newIdempotencyKey,
         replacesTransactionId: original._id,       // back-pointer to original
-        linkedAccountId:       null,
-        parentTransactionId:   null,
-        status:                'COMPLETED',
+        linkedAccountId: null,
+        parentTransactionId: null,
+        status: 'COMPLETED',
       }], { session });
 
       // ── Step 8: Void the original ────────────────────────────────────────
@@ -284,34 +278,34 @@ async function editTransaction(params) {
       //
       // ⚠️ IMPORTANT: This requires removing 'idempotencyKey' from
       // IMMUTABLE_FIELDS in ledger.js, since we are mutating it here.
-      original.status         = 'VOIDED';
+      original.status = 'VOIDED';
       original.idempotencyKey = voidIdempotencyKey;
       await original.save({ session });
 
       // ── Step 9: Update cached account balance ────────────────────────────
       account.availableBalance = toDecimal128(netAvailable);
-      account.reservedBalance  = toDecimal128(netReserved);
+      account.reservedBalance = toDecimal128(netReserved);
       await account.save({ session });
 
       await session.commitTransaction();
 
       return {
-        duplicate:        false,
-        originalTxId:     original._id.toString(),
-        replacementTxId:  replacement._id.toString(),
+        duplicate: false,
+        originalTxId: original._id.toString(),
+        replacementTxId: replacement._id.toString(),
         availableBalance: netAvailable.toFixed(2),
-        reservedBalance:  netReserved.toFixed(2),
+        reservedBalance: netReserved.toFixed(2),
       };
 
     } catch (error) {
-      if (session.inTransaction()) await session.abortTransaction().catch(() => {});
+      if (session.inTransaction()) await session.abortTransaction().catch(() => { });
 
       // Typed errors — re-throw immediately, no retry
       if (error instanceof EditTransactionError) throw error;
 
-      const isVersionError  = error.name === 'VersionError';
-      const isWriteConflict = error.code  === 112 ||
-                              error.hasErrorLabel?.('TransientTransactionError');
+      const isVersionError = error.name === 'VersionError';
+      const isWriteConflict = error.code === 112 ||
+        error.hasErrorLabel?.('TransientTransactionError');
 
       if ((isVersionError || isWriteConflict) && attempt < MAX_RETRIES) {
         await new Promise(r => setTimeout(r, Math.random() * 50 * attempt));
@@ -338,14 +332,14 @@ async function editTransaction(params) {
               .findOne({ _id: existing.accountId, userId })
               .lean();
             return {
-              duplicate:        true,
+              duplicate: true,
               originalTxId,
-              replacementTxId:  existing._id.toString(),
+              replacementTxId: existing._id.toString(),
               availableBalance: account?.availableBalance?.toString() ?? '0.00',
-              reservedBalance:  account?.reservedBalance?.toString()  ?? '0.00',
+              reservedBalance: account?.reservedBalance?.toString() ?? '0.00',
             };
           }
-        } catch (_) {}
+        } catch (_) { }
       }
 
       throw error;
@@ -359,7 +353,7 @@ async function editTransaction(params) {
 // ─── HTTP handler ─────────────────────────────────────────────────────────────
 
 exports.editTransaction = async (req, res, next) => {
-  const userId           = req.user.id;
+  const userId = req.user.id;
   const { originalTxId } = req.params;
   const {
     editIdempotencyKey,
@@ -410,4 +404,4 @@ exports.editTransaction = async (req, res, next) => {
 };
 
 exports.EditTransactionError = EditTransactionError;
-exports._editTransaction      = editTransaction; // exported for unit tests
+exports._editTransaction = editTransaction; // exported for unit tests

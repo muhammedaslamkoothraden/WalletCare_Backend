@@ -1,8 +1,9 @@
 'use strict';
 
 const mongoose = require('mongoose');
-const Decimal  = require('decimal.js');
-const Account  = require('../models/Account');
+const Decimal = require('decimal.js');
+const Account = require('../models/Account');
+const { assertString, StringValidationError } = require('../helpers/sanitize');
 
 const VALID_ACCOUNT_TYPES = Object.freeze(new Set(['CASH', 'BANK']));
 
@@ -14,7 +15,7 @@ function errRes(res, status, message) {
 
 exports.getAccountBalances = async (req, res) => {
   try {
-    const userId            = req.user.id;
+    const userId = req.user.id;
     const { accountId, type } = req.query;
 
     const query = { userId, status: { $ne: 'CLOSED' } };
@@ -38,9 +39,9 @@ exports.getAccountBalances = async (req, res) => {
 
     if (!accounts.length) {
       return res.status(200).json({
-        success:       true,
+        success: true,
         globalSummary: { totalAvailable: '0.00', totalReserved: '0.00', netWorth: '0.00' },
-        accounts:      [],
+        accounts: [],
       });
     }
 
@@ -50,40 +51,41 @@ exports.getAccountBalances = async (req, res) => {
       let avail, resv;
       try {
         avail = new Decimal(acc.availableBalance?.toString() || '0');
-        resv  = new Decimal(acc.reservedBalance?.toString()  || '0');
+        resv = new Decimal(acc.reservedBalance?.toString() || '0');
         if (avail.isNegative()) avail = new Decimal(0);
-        if (resv.isNegative())  resv  = new Decimal(0);
+        if (resv.isNegative()) resv = new Decimal(0);
       } catch {
         avail = new Decimal(0);
-        resv  = new Decimal(0);
+        resv = new Decimal(0);
       }
 
       totals.available = totals.available.plus(avail);
-      totals.reserved  = totals.reserved.plus(resv);
+      totals.reserved = totals.reserved.plus(resv);
 
       return {
-        id:        acc._id,
-        name:      acc.name,
-        type:      acc.type,
-        currency:  acc.currency,
+        id: acc._id,
+        name: acc.name,
+        type: acc.type,
+        currency: acc.currency,
         available: avail.toFixed(2),
-        reserved:  resv.toFixed(2),
-        total:     avail.plus(resv).toFixed(2),
+        reserved: resv.toFixed(2),
+        total: avail.plus(resv).toFixed(2),
         isDefault: acc.isDefault,
-        status:    acc.status,
+        status: acc.status,
       };
     });
 
     return res.status(200).json({
-      success:       true,
+      success: true,
       globalSummary: {
         totalAvailable: totals.available.toFixed(2),
-        totalReserved:  totals.reserved.toFixed(2),
-        netWorth:       totals.available.plus(totals.reserved).toFixed(2),
+        totalReserved: totals.reserved.toFixed(2),
+        netWorth: totals.available.plus(totals.reserved).toFixed(2),
       },
       accounts: formatted,
     });
   } catch (error) {
+    console.error(error);
     return errRes(res, 500, 'Failed to fetch balances');
   }
 };
@@ -94,27 +96,22 @@ exports.createAccount = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const userId         = req.user.id;
+    const userId = req.user.id;
     const { name, type } = req.body;
-    const cleanType      = type?.toUpperCase();
+    const cleanType = type?.toUpperCase();
 
     if (!VALID_ACCOUNT_TYPES.has(cleanType)) {
       await session.abortTransaction();
       return errRes(res, 400, 'Type must be CASH or BANK');
     }
 
-    const cleanName = name?.trim();
-
-    // Reject empty string explicitly — trim() turns '   ' into ''
-    // which would pass a simple !name check but is not a valid account name.
-    if (!cleanName) {
+    let cleanName;
+    try {
+      cleanName = assertString(name, 'Account name', { maxLength: 32 });
+    } catch (err) {
       await session.abortTransaction();
-      return errRes(res, 400, 'Account name is required');
-    }
-
-    if (cleanName.length > 32) {
-      await session.abortTransaction();
-      return errRes(res, 400, 'Account name cannot exceed 32 characters');
+      if (err instanceof StringValidationError) return errRes(res, 400, err.message);
+      throw err;
     }
 
     const existingCount = await Account.countDocuments(
@@ -122,10 +119,6 @@ exports.createAccount = async (req, res) => {
       { session }
     );
     const isDefault = existingCount === 0;
-
-    if (isDefault) {
-      await Account.updateMany({ userId }, { isDefault: false }, { session });
-    }
 
     const [newAccount] = await Account.create(
       [{ userId, name: cleanName, type: cleanType, isDefault }],
@@ -141,15 +134,16 @@ exports.createAccount = async (req, res) => {
       // Two distinct duplicate key scenarios share the same error code:
       // 1. { userId, _normalizedName } — user already has an account with this name.
       // 2. { userId, isDefault: true } — concurrent request already set a default.
-      const isNameConflict    = error.message?.includes('_normalizedName');
+      const isNameConflict = error.message?.includes('_normalizedName');
       const isDefaultConflict = error.message?.includes('isDefault');
 
-      if (isNameConflict)    return errRes(res, 409, 'An account with this name already exists');
+      if (isNameConflict) return errRes(res, 409, 'An account with this name already exists');
       if (isDefaultConflict) return errRes(res, 409, 'A default account was already created — please retry');
 
       return errRes(res, 409, 'Duplicate account entry');
     }
 
+    console.error(error);
     return errRes(res, 500, 'Account creation failed');
   } finally {
     session.endSession();
@@ -162,7 +156,7 @@ exports.setAccountAsDefault = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const userId        = req.user.id;
+    const userId = req.user.id;
     const { accountId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(accountId)) {
@@ -187,11 +181,9 @@ exports.setAccountAsDefault = async (req, res) => {
     }
 
     await Account.updateMany({ userId }, { isDefault: false }, { session });
-    await Account.updateOne(
-      { _id: accountId, userId },
-      { isDefault: true },
-      { session }
-    );
+
+    target.isDefault = true;
+    await target.save({ session });
 
     await session.commitTransaction();
     return res.status(200).json({ success: true, message: 'Default account updated' });
@@ -205,6 +197,7 @@ exports.setAccountAsDefault = async (req, res) => {
       return errRes(res, 409, 'Another account was set as default simultaneously — please retry');
     }
 
+    console.error(error);
     return errRes(res, 500, 'Failed to update default account');
   } finally {
     session.endSession();

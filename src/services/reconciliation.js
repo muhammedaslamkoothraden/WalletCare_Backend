@@ -15,7 +15,7 @@ const LARGE_MISMATCH_THRESHOLD = new Decimal('1000.00');
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function toDecimal128(decimalValue) {
-  return mongoose.Types.Decimal128.fromString(decimalValue.toFixed(2));
+  return mongoose.Types.Decimal128.fromString(decimalValue);
 }
 
 // ─── Core: recompute expected balances for one account ────────────────────────
@@ -236,18 +236,30 @@ async function reconcileAccount(accountId, userId, opts = {}) {
     // Large mismatches are never auto-corrected — they require manual review.
     // The threshold is configurable via LARGE_MISMATCH_THRESHOLD above.
     if (autoCorrect && !isLarge) {
-      await Account.updateOne(
-        { _id: accountId },
+      const updateResult = await Account.updateOne(
+        {
+          _id: accountId,
+          availableBalance: toDecimal128(new Decimal(result.cachedAvailable).toFixed(2)),
+          reservedBalance: toDecimal128(new Decimal(result.cachedReserved).toFixed(2))
+        },
         {
           $set: {
-            availableBalance: toDecimal128(expectedAvailable),
-            reservedBalance: toDecimal128(expectedReserved),
+            availableBalance: toDecimal128(expectedAvailable.toFixed(2)),
+            reservedBalance: toDecimal128(expectedReserved.toFixed(2)),
             reconciliationStatus: 'OK',
             lastReconciledAt: new Date(),
           },
         },
-        session ? { session } : {}
+        session ? { session, isReconciliation: true } : { isReconciliation: true }
       );
+
+      if (updateResult.modifiedCount === 0) {
+        result.status = 'MISMATCH';
+        result.corrected = false;
+        result.error = 'Auto-correction aborted due to concurrent balance modification';
+        return result;
+      }
+
       result.corrected = true;
       result.status = 'MISMATCH'; // keep the original status so callers know a fix was needed
     }

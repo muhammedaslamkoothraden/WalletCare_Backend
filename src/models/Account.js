@@ -236,6 +236,13 @@ AccountSchema.pre(['updateOne', 'findOneAndUpdate', 'updateMany'], async functio
       throw new Error('Account can only be closed if both available and reserved balances are exactly 0.00');
     }
   }
+
+  // ── Track last transaction time (unless it's a silent reconciliation fix) ──
+  const isBalanceModified = targeted.has('availableBalance') || targeted.has('reservedBalance');
+  if (isBalanceModified && !options.isReconciliation) {
+    this.getUpdate().$set = this.getUpdate().$set || {};
+    this.getUpdate().$set.lastTransactionAt = new Date();
+  }
 });
 
 // ─── Model ────────────────────────────────────────────────────────────────────
