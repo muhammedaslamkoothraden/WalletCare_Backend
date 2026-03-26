@@ -1,11 +1,13 @@
+'use strict';
+
 const express = require('express');
 const router = express.Router();
-const protect = require('../middlewares/auth.middleware');
+
+const authMiddleware = require('../middlewares/auth.middleware');
 const transactionController = require('../controllers/transactionController');
 
-router.use(protect);
-
-router.get('/history', transactionController.getHistory);
-router.post('/process', transactionController.processTransaction);
+router.get('/history/:userId', authMiddleware, transactionController.getHistory);
+router.post('/process', authMiddleware, transactionController.processTransaction);
+router.post('/account-transfer', authMiddleware, transactionController.accountTransfer);
 
 module.exports = router;

@@ -1,15 +1,15 @@
 'use strict';
 
 const mongoose = require('mongoose');
-const Decimal  = require('decimal.js');
+const Decimal = require('decimal.js');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const VALID_TRANSITIONS = {
-  PENDING:   ['COMPLETED', 'FAILED'],
+  PENDING: ['COMPLETED', 'FAILED'],
   COMPLETED: ['VOIDED'],
-  FAILED:    [],
-  VOIDED:    [],
+  FAILED: [],
+  VOIDED: [],
 };
 
 const TRANSFER_DIRECTIONS = new Set([
@@ -17,9 +17,6 @@ const TRANSFER_DIRECTIONS = new Set([
   'ACCOUNT_TRANSFER_OUT',
 ]);
 
-// Financial fields that can never change after creation.
-// description and partyName are excluded — they may be corrected
-// on PENDING entries before finalization.
 const IMMUTABLE_FIELDS = new Set([
   'amount', 'userId', 'accountId', 'transactionType',
   'direction', 'idempotencyKey', 'parentTransactionId', 'category',
@@ -30,23 +27,28 @@ const IMMUTABLE_FIELDS = new Set([
 const LedgerSchema = new mongoose.Schema(
   {
     userId: {
-      type:     mongoose.Schema.Types.ObjectId,
-      ref:      'User',
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
       required: true,
-      index:    true,
+      index: true,
     },
     accountId: {
-      type:     mongoose.Schema.Types.ObjectId,
-      ref:      'Account',
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Account',
       required: true,
     },
+    goalId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Goal',
+      default: null,
+      index: true,   
+    },
+
     amount: {
-      type:     mongoose.Schema.Types.Decimal128,
+      type: mongoose.Schema.Types.Decimal128,
       required: true,
-      get:      (v) => (v ? v.toString() : '0.00'),
+      get: (v) => (v ? v.toString() : '0.00'),
       validate: {
-        // Mongoose's built-in min silently ignores Decimal128 —
-        // a manual validator with try/catch is required
         validator: function (v) {
           try {
             return new Decimal(v.toString()).greaterThanOrEqualTo('0.01');
@@ -57,14 +59,16 @@ const LedgerSchema = new mongoose.Schema(
         message: 'Amount must be at least 0.01',
       },
     },
+
     transactionType: {
-      type:     String,
-      enum:     ['INCOME', 'EXPENSE', 'TRANSFER', 'REVERSAL'],
+      type: String,
+      enum: ['INCOME', 'EXPENSE', 'TRANSFER', 'REVERSAL'],
       required: true,
     },
+
     direction: {
-      type:     String,
-      enum:     [
+      type: String,
+      enum: [
         'STANDARD',
         'GOAL_ALLOCATION',
         'GOAL_DEALLOCATION',
@@ -74,55 +78,82 @@ const LedgerSchema = new mongoose.Schema(
         'REVERSAL',
       ],
       required: true,
-      default:  'STANDARD',
+      default: 'STANDARD',
     },
+
     linkedAccountId: {
-      type:    mongoose.Schema.Types.ObjectId,
-      ref:     'Account',
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Account',
       default: null,
     },
+
+    // Groups the OUT and IN ledger entries of a single transfer.
+    // Used to detect and surface half-written transfers during
+    // idempotency recovery. Set to the same ObjectId on both legs.
+    transferGroupId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+      index: true,
+    },
+
     idempotencyKey: {
-      type:      String,
-      required:  true,
-      trim:      true,
-      minlength: [8,   'idempotencyKey must be at least 8 characters'],
+      type: String,
+      required: true,
+      trim: true,
+      minlength: [8, 'idempotencyKey must be at least 8 characters'],
       maxlength: [128, 'idempotencyKey cannot exceed 128 characters'],
     },
+
     parentTransactionId: {
-      type:    mongoose.Schema.Types.ObjectId,
-      ref:     'Ledger',
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Ledger',
       default: null,
     },
+
     partyName: {
-      type:      String,
-      trim:      true,
+      type: String,
+      trim: true,
       maxlength: [100, 'partyName cannot exceed 100 characters'],
     },
+
     category: {
-      type:      String,
-      required:  true,
-      trim:      true,
+      type: String,
+      required: true,
+      trim: true,
       maxlength: [50, 'category cannot exceed 50 characters'],
     },
+
     description: {
-      type:      String,
-      trim:      true,
+      type: String,
+      trim: true,
       maxlength: [255, 'description cannot exceed 255 characters'],
     },
+
+    // ⚠️ IMPORTANT:
+    // These snapshots represent account state AFTER this transaction.
+    // Used for audit and debugging. Ledger remains the source of truth.
+    snapshotAvailable: {
+      type: mongoose.Schema.Types.Decimal128,
+      required: true,
+      get: (v) => (v ? v.toString() : '0.00'),
+    },
+
+    snapshotReserved: {
+      type: mongoose.Schema.Types.Decimal128,
+      required: true,
+      get: (v) => (v ? v.toString() : '0.00'),
+    },
+
     status: {
-      type:    String,
-      enum:    ['PENDING', 'COMPLETED', 'FAILED', 'VOIDED'],
+      type: String,
+      enum: ['PENDING', 'COMPLETED', 'FAILED', 'VOIDED'],
       default: 'COMPLETED',
     },
   },
   {
     timestamps: true,
-    toJSON:     { getters: true },
-    toObject:   { getters: true },
-    // Mongoose increments __v on every save and includes it in the WHERE
-    // clause — if another request saved first, this throws a VersionError.
-    // This is detect-and-reject concurrency, not a lock. True atomicity
-    // across a read + save requires a MongoDB session at the service layer.
+    toJSON: { getters: true },
+    toObject: { getters: true },
     optimisticConcurrency: true,
   }
 );
@@ -130,21 +161,36 @@ const LedgerSchema = new mongoose.Schema(
 // ─── Indexes ──────────────────────────────────────────────────────────────────
 
 LedgerSchema.index({ userId: 1, idempotencyKey: 1 }, { unique: true });
-LedgerSchema.index({ accountId: 1, transactionType: 1, direction: 1, createdAt: -1 });
-LedgerSchema.index({ parentTransactionId: 1 }, { sparse: true });
+LedgerSchema.index({ accountId: 1, createdAt: -1 });
 LedgerSchema.index({ userId: 1, _id: -1 });
+
+// Sparse index for reversal lookups by parent.
+LedgerSchema.index({ parentTransactionId: 1 }, { sparse: true });
+
+// FIX: Enforce one reversal per parent transaction at the database level.
+// Prevents two concurrent requests with different idempotency keys from
+// both reversing the same parent. The query-based alreadyReversed check
+// in the controller is kept as an early exit for a better error message,
+// but this index is the hard guarantee.
+LedgerSchema.index(
+  { parentTransactionId: 1, direction: 1 },
+  {
+    unique: true,
+    sparse: true,
+    partialFilterExpression: { direction: 'REVERSAL' },
+    name: 'one_reversal_per_parent',
+  }
+);
 
 // ─── Pre-save middleware ──────────────────────────────────────────────────────
 
 LedgerSchema.pre('save', async function () {
 
-  // ── New document: cross-field validation ──────────────────────────────────
   if (this.isNew) {
     if (TRANSFER_DIRECTIONS.has(this.direction) && !this.linkedAccountId) {
       throw new Error(`direction '${this.direction}' requires linkedAccountId`);
     }
 
-    // Compare as strings — ObjectId === ObjectId is always false
     if (
       this.linkedAccountId &&
       this.accountId.toString() === this.linkedAccountId.toString()
@@ -159,20 +205,26 @@ LedgerSchema.pre('save', async function () {
     return;
   }
 
-  // ── Existing document: immutability ───────────────────────────────────────
+  // ── Immutability ───────────────────────────────────────────────────────────
   for (const field of IMMUTABLE_FIELDS) {
     if (this.isModified(field)) {
       throw new Error(`'${field}' cannot be changed after creation`);
     }
   }
 
-  // ── Existing document: state machine ──────────────────────────────────────
+  // ── Status transition ──────────────────────────────────────────────────────
   if (this.isModified('status')) {
-    // Fetch previous status — optimisticConcurrency will reject the save if
-    // __v has advanced since we loaded this document, closing the race window
+    // FIX: Use this.$session() so the read joins the active MongoDB
+    // transaction. Without this, the findById runs outside the session
+    // under read-committed isolation — it can see state from a concurrent
+    // committed transaction that our current transaction hasn't observed,
+    // making the transition validation causally inconsistent.
+    const session = this.$session();
+
     const previous = await mongoose
       .model('Ledger')
       .findById(this._id, { status: 1 })
+      .session(session)   // ← critical fix
       .lean();
 
     if (!previous) {
@@ -187,7 +239,7 @@ LedgerSchema.pre('save', async function () {
     return;
   }
 
-  // ── Block all other changes to finalized entries ───────────────────────────
+  // ── Finalized entries cannot change ────────────────────────────────────────
   if (['COMPLETED', 'VOIDED', 'FAILED'].includes(this.status)) {
     throw new Error('Finalized ledger entries cannot be modified');
   }
@@ -199,13 +251,10 @@ LedgerSchema.pre(['updateOne', 'findOneAndUpdate', 'updateMany'], function () {
   const update = this.getUpdate();
   const filter = this.getFilter();
 
-  // Block full document replacement — overwrites all fields including immutable ones
   if (!Object.keys(update).some((k) => k.startsWith('$'))) {
     throw new Error('Document replacement is not permitted on ledger entries');
   }
 
-  // Collect all field names targeted by any update operator.
-  // Handles nested array operator syntax: $push: { field: { $each: [...] } }
   const targeted = new Set();
   for (const [op, payload] of Object.entries(update)) {
     if (op.startsWith('$') && payload && typeof payload === 'object') {
@@ -215,23 +264,15 @@ LedgerSchema.pre(['updateOne', 'findOneAndUpdate', 'updateMany'], function () {
     }
   }
 
-  // Block modifications to immutable financial fields
   for (const field of IMMUTABLE_FIELDS) {
     if (targeted.has(field)) {
       throw new Error(`'${field}' cannot be modified after creation`);
     }
   }
 
-  // State machine enforcement for direct status updates.
-  // Caller must include current status in filter — MongoDB's match condition
-  // acts as the atomic check. If the DB status differs, zero docs are updated.
-  // ⚠️  Service layer must check modifiedCount === 0 and treat it as a conflict.
   if (update.$set?.status) {
     if (!filter.status) {
-      throw new Error(
-        'Status updates must include current status in the filter ' +
-        'for atomic transition safety — e.g. { _id, status: "COMPLETED" }'
-      );
+      throw new Error('Status updates must include current status in filter');
     }
 
     const allowed = VALID_TRANSITIONS[filter.status] ?? [];

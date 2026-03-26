@@ -28,6 +28,11 @@ const AccountSchema = new mongoose.Schema(
       required:  [true, 'Account type is required'],
       uppercase: true,
     },
+
+    // ⚠️ IMPORTANT SYSTEM CONTRACT:
+    // Account balances are DERIVED (cached) values.
+    // The Ledger collection is the single source of truth.
+    // Any inconsistency must be resolved via reconciliation.
     availableBalance: {
       type:    mongoose.Schema.Types.Decimal128,
       default: '0.00',
@@ -38,6 +43,7 @@ const AccountSchema = new mongoose.Schema(
       default: '0.00',
       get:     (v) => (v ? v.toString() : '0.00'),
     },
+
     currency: {
       type:      String,
       default:   'INR',
@@ -57,32 +63,37 @@ const AccountSchema = new mongoose.Schema(
       default: 'ACTIVE',
     },
 
+    // ─── Reconciliation & Tracking ──────────────────────────────────────────
+    lastTransactionAt: {
+      type:    Date,
+      default: null,
+    },
+    lastReconciledAt: {
+      type:    Date,
+      default: null,
+    },
+    reconciliationStatus: {
+      type:    String,
+      enum:    ['OK', 'MISMATCH'],
+      default: 'OK',
+    },
+
     // Normalised lowercase name for case-insensitive uniqueness checks.
-    // Stored separately so the user-facing name retains original casing.
-    // Set automatically in pre('save') — never set by the caller directly.
     _normalizedName: {
       type:   String,
-      select: false, // excluded from query results — internal field only
+      select: false,
     },
   },
   {
     timestamps:            true,
     toJSON:                { virtuals: true, getters: true },
     toObject:              { virtuals: true, getters: true },
-    // Prevents race conditions on concurrent balance updates.
-    // If two requests load the same account and both call .save(),
-    // the second throws a VersionError because __v has already advanced.
-    // This is detect-and-reject, not a lock — the service layer must
-    // handle VersionError with a retry or a 409 response.
     optimisticConcurrency: true,
   }
 );
 
 // ─── Indexes ──────────────────────────────────────────────────────────────────
 
-// Case-insensitive uniqueness: 'savings' and 'Savings' are the same name
-// for the same user. The unique constraint is on the normalised value so
-// the user-facing name field can keep its original casing.
 AccountSchema.index({ userId: 1, _normalizedName: 1 }, { unique: true });
 
 // ─── Virtuals ─────────────────────────────────────────────────────────────────
@@ -107,15 +118,16 @@ AccountSchema.pre('save', async function () {
   }
 
   // ── Closed account guard ──────────────────────────────────────────────────
-  // A closed account must not receive any further changes.
-  // Check after immutability so the error message is specific.
-  if (!this.isNew && this.status === 'CLOSED' && this.isModified()) {
-    throw new Error('Closed accounts cannot be modified');
+  // Allow metadata updates, block only balance changes
+  if (
+    !this.isNew &&
+    this.status === 'CLOSED' &&
+    (this.isModified('availableBalance') || this.isModified('reservedBalance'))
+  ) {
+    throw new Error('Balance cannot be changed on a closed account');
   }
 
   // ── Frozen account guard ──────────────────────────────────────────────────
-  // A frozen account may have its status changed (e.g. unfrozen by admin)
-  // but its balances must not move while frozen.
   if (
     !this.isNew &&
     this.status === 'FROZEN' &&
@@ -131,9 +143,16 @@ AccountSchema.pre('save', async function () {
   if (available.isNegative()) throw new Error('Available balance cannot be negative');
   if (reserved.isNegative())  throw new Error('Reserved balance cannot be negative');
 
-  // ── Normalised name for case-insensitive uniqueness ───────────────────────
-  // Recompute whenever name changes so the index stays in sync.
-  if (this.isModified('name')) {
+  // ── Track last transaction time ───────────────────────────────────────────
+  if (
+    this.isModified('availableBalance') ||
+    this.isModified('reservedBalance')
+  ) {
+    this.lastTransactionAt = new Date();
+  }
+
+  // ── Normalised name ───────────────────────────────────────────────────────
+if (this.isNew || this.isModified('name')) {
     this._normalizedName = this.name.toLowerCase();
   }
 });
