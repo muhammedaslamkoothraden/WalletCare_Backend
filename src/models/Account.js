@@ -152,7 +152,7 @@ AccountSchema.pre('save', async function () {
   }
 
   // ── Normalised name ───────────────────────────────────────────────────────
-  if (this.isModified('name')) {
+if (this.isNew || this.isModified('name')) {
     this._normalizedName = this.name.toLowerCase();
   }
 });

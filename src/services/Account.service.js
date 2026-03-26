@@ -1,45 +1,35 @@
-const Account = require("../models/Account");
+'use strict';
 
-/**
- * @description Automatically creates the default 'Cash' account for a new user.
- * Must be called within a session to ensure transactional integrity.
- * @param {mongoose.Types.ObjectId} userId - The ID of the newly created user
- * @param {mongoose.ClientSession} session - The active MongoDB transaction session
- */
+const mongoose = require('mongoose');
+const Account  = require('../models/Account');
+
 exports.initializeAccountForUser = async (userId, session) => {
   try {
-    // 1. Idempotency Check
-    const existingAccount = await Account.findOne({ 
-      userId, 
-      name: "Cash" 
-    }).session(session);
-
-    if (existingAccount) {
-      console.log(`Account already exists for user: ${userId}`);
-      return existingAccount;
+    // Guard — catch malformed userId before any DB call
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      throw new Error('Invalid userId passed to initializeAccountForUser');
     }
 
-    // 2. Define the default wallet
-    // Notice how lean this is? The Schema defaults handle the zero-balances,
-    // and the pre('save') middleware automatically calculates totalBalance!
+    // Idempotency check — uses _normalizedName to match the unique index
+    const existingAccount = await Account.findOne({
+      userId,
+      _normalizedName: 'cash',
+    }).session(session);
+
+    if (existingAccount) return existingAccount;
+
     const defaultAccount = new Account({
-      userId: userId,
-      name: "Cash",
-      type: "CASH",
+      userId,
+      name:      'Cash',
+      type:      'CASH',
       isDefault: true,
-      currency: "INR" 
-      // status: 'ACTIVE' is automatically applied by the schema default
+      currency:  'INR',
     });
 
-    // 3. Save and trigger the Guardian middleware
     await defaultAccount.save({ session });
-    
-    console.log(`Successfully initialized Cash account for user: ${userId}`);
     return defaultAccount;
 
   } catch (error) {
-    console.error(`--- ACCOUNT INIT ERROR [User: ${userId}] ---`);
-    console.error("Mongoose Error:", error.message);
-    throw error; // Let the Auth Controller handle the rollback
+    throw error; // Auth controller owns the session rollback
   }
 };
