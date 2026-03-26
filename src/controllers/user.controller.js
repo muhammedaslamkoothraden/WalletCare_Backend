@@ -199,15 +199,6 @@ exports.deleteAccount = async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(401).json({ message: "Incorrect password" });
 
-    // already scheduled — tell user when it will be deleted
-    if (user.scheduledDeletionAt) {
-      const daysLeft = Math.ceil((user.scheduledDeletionAt - new Date()) / (1000 * 60 * 60 * 24));
-      return res.status(200).json({
-        message: `Your account is already scheduled for deletion in ${daysLeft} day(s).`,
-        scheduledDeletionAt: user.scheduledDeletionAt,
-      });
-    }
-
     const scheduledDeletionAt = new Date(Date.now() + DELETION_DAYS * 24 * 60 * 60 * 1000);
 
     // null refreshToken — forces logout after current accessToken expires
@@ -218,7 +209,7 @@ exports.deleteAccount = async (req, res) => {
       scheduledDeletionAt,
     });
 
-  } catch (error) {
+  } catch (error) {;
     console.error("deleteAccount error:", error.message);
     return res.status(500).json({ message: "Server error" });
   }
