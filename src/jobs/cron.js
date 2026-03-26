@@ -3,12 +3,11 @@ const cron = require("node-cron");
 const { updateGoalStatus } = require("./goalStatus.job");
 const { updateOverdueGoals } = require("./goalOverdue.job");
 const { sendGoalReminders } = require("./goalReminder.job");
-const { runReconciliationJob } = require("./reconciliation.job");  // add this
+const { runReconciliationJob } = require("./reconciliationjob");  // add this
 
 console.log("Cron jobs initialized...");
 
 /*
------------------------------------------
 Goal Status Update Job
 Runs every day at midnight
 -----------------------------------------

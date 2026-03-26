@@ -152,10 +152,11 @@ const LedgerSchema = new mongoose.Schema(
 
 // ─── Indexes ──────────────────────────────────────────────────────────────────
 
+LedgerSchema.index({ accountId: 1, status: 1 });
 LedgerSchema.index({ userId: 1, idempotencyKey: 1 }, { unique: true });
 LedgerSchema.index({ accountId: 1, createdAt: -1 });
 LedgerSchema.index({ userId: 1, _id: -1 });
-LedgerSchema.index({ replacesTransactionId: 1 },{ sparse: true });
+LedgerSchema.index({ replacesTransactionId: 1 }, { sparse: true });
 
 // Sparse index for reversal lookups by parent.
 LedgerSchema.index({ parentTransactionId: 1 }, { sparse: true });
@@ -204,8 +205,8 @@ LedgerSchema.pre('save', async function () {
       throw new Error('REVERSAL transactions must reference a parentTransactionId');
     }
     if (this.direction === 'EDIT_REPLACEMENT' && !this.replacesTransactionId) {
-  throw new Error('EDIT_REPLACEMENT transactions must reference a replacesTransactionId');
-}
+      throw new Error('EDIT_REPLACEMENT transactions must reference a replacesTransactionId');
+    }
 
     return;
   }
@@ -252,7 +253,8 @@ LedgerSchema.pre('save', async function () {
 
 // ─── Pre-update middleware ────────────────────────────────────────────────────
 
-LedgerSchema.pre(['updateOne', 'findOneAndUpdate', 'updateMany'], function () {
+LedgerSchema.pre(['updateOne', 'findOneAndUpdate', 'updateMany'], async function () {
+  this.setOptions({ runValidators: true });
   const update = this.getUpdate();
   const filter = this.getFilter();
 
@@ -276,15 +278,14 @@ LedgerSchema.pre(['updateOne', 'findOneAndUpdate', 'updateMany'], function () {
   }
 
   if (update.$set?.status) {
-    if (!filter.status) {
-      throw new Error('Status updates must include current status in filter');
-    }
-
-    const allowed = VALID_TRANSITIONS[filter.status] ?? [];
-    if (!allowed.includes(update.$set.status)) {
-      throw new Error(
-        `Invalid status transition: ${filter.status} → ${update.$set.status}`
-      );
+    const docs = await this.model.find(filter).session(this.getOptions().session);
+    for (const doc of docs) {
+      const allowed = VALID_TRANSITIONS[doc.status] ?? [];
+      if (!allowed.includes(update.$set.status)) {
+        throw new Error(
+          `Invalid status transition: ${doc.status} → ${update.$set.status}`
+        );
+      }
     }
   }
 });

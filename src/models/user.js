@@ -42,7 +42,8 @@ pendingUserSchema.index({ email: 1 }, { unique: true });
 // Auto-delete pending users after 24 hours
 pendingUserSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
-const User = mongoose.model("User", userSchema);
-const PendingUser = mongoose.model("PendingUser", pendingUserSchema);
+// Check if models exist before compiling to prevent OverwriteModelError
+const User = mongoose.models.User || mongoose.model("User", userSchema);
+const PendingUser = mongoose.models.PendingUser || mongoose.model("PendingUser", pendingUserSchema);
 
 module.exports = { User, PendingUser };
