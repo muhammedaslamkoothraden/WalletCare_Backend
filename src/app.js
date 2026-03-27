@@ -10,6 +10,7 @@ const transactionRoutes = require("./routes/transaction.routes");
 const goalRoutes = require("./routes/goal.routes");
 const analyticsRoutes = require("./routes/analytics.routes");
 const notificationRoutes = require("./routes/notification.routes");
+const feedbackRoutes = require("./routes/feedback.routes");
 
 const authMiddleware = require("./middlewares/auth.middleware");
 
@@ -36,5 +37,6 @@ app.use("/api/transaction", authMiddleware, transactionRoutes);
 app.use("/api/goals", authMiddleware, goalRoutes);
 app.use("/api/analytics", authMiddleware, analyticsRoutes);
 app.use("/api/notifications", authMiddleware, notificationRoutes);
+app.use("/api/feedback", authMiddleware, feedbackRoutes);
 
 module.exports = app;

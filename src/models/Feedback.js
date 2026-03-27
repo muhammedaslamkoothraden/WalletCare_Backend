@@ -9,15 +9,15 @@ const feedbackSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-    category: {
-      type: String,
-      enum: FEEDBACK_CATEGORIES,
-      required: true,
-    },
     rating: {
       type: Number,
       min: 1,
       max: 5,
+      default: null, // snapshot of user's rating at submit time
+    },
+    category: {
+      type: String,
+      enum: FEEDBACK_CATEGORIES,
       required: true,
     },
     description: {
@@ -28,7 +28,7 @@ const feedbackSchema = new mongoose.Schema(
     },
     screenshot: {
       type: String,
-      default: null, // stores image URL
+      default: null, // image URL
     },
   },
   { timestamps: true }
