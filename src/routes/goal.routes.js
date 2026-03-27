@@ -18,20 +18,20 @@ const {
 } = require("../controllers/goal.controller");
 
 
-// Static & summary routes — must be above /:id routes
+// --- 1. Static & Summary Routes (must be above /:id) ---
 router.get("/summary", getGoalSummary);
 router.get("/analytics/prediction", getGoalPrediction);
 
-// --- 2. History Routes ---
-// Gets only ALLOCATIONS and DEALLOCATIONS for a specific account
+// --- 2. Account History Route (must be above /:id) ---
 router.get("/account/:accountId/history", getAccountGoalTransitions);
 router.get("/:id/history", getGoalHistory); // Full history for a specific goal
 
-// Collection routes
+// --- 3. Collection Routes ---
 router.get("/", generalLimiter, getGoals);
 router.post("/", generalLimiter, createGoal);
 
-// Individual ID-based routes
+// --- 4. Individual ID-based Routes ---
+router.get("/:id/history", getGoalHistory);
 router.get("/:id", getGoalById);
 router.put("/:id", updateGoal);
 router.delete("/:id", deleteGoal);
