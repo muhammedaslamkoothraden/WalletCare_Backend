@@ -50,6 +50,7 @@ const LedgerSchema = new mongoose.Schema(
       get: (v) => (v ? v.toString() : '0.00'),
       validate: {
         validator: function (v) {
+          // Defensively handle the case where a raw JS number is passed instead of a Decimal128 object
           try {
             return new Decimal(v.toString()).greaterThanOrEqualTo('0.01');
           } catch {
@@ -153,7 +154,7 @@ const LedgerSchema = new mongoose.Schema(
 // ─── Indexes ──────────────────────────────────────────────────────────────────
 
 LedgerSchema.index({ accountId: 1, status: 1 });
-LedgerSchema.index({ userId: 1, idempotencyKey: 1 }, { unique: true });
+LedgerSchema.index({ userId: 1, idempotencyKey: 1 }, { unique: true, partialFilterExpression: { status: { $ne: 'FAILED' } } });
 LedgerSchema.index({ accountId: 1, createdAt: -1 });
 LedgerSchema.index({ userId: 1, _id: -1 });
 LedgerSchema.index({ replacesTransactionId: 1 }, { sparse: true });
@@ -278,7 +279,7 @@ LedgerSchema.pre(['updateOne', 'findOneAndUpdate', 'updateMany'], async function
   }
 
   if (update.$set?.status) {
-    const docs = await this.model.find(filter).session(this.getOptions().session);
+    const docs = await this.model.find(filter).session(this.getOptions().session ?? null);
     for (const doc of docs) {
       const allowed = VALID_TRANSITIONS[doc.status] ?? [];
       if (!allowed.includes(update.$set.status)) {

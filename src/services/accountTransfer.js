@@ -18,9 +18,13 @@ class TransferError extends Error {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function toDecimal128(decimalValue) {
-  return mongoose.Types.Decimal128.fromString(decimalValue);
-}
+const toDecimal128 = (value) => {
+  if (value === null || value === undefined) {
+    return mongoose.Types.Decimal128.fromString("0");
+  }
+  // 🎯 The magic .toString() fixes the crash!
+  return mongoose.Types.Decimal128.fromString(value.toString());
+};
 
 // FIX: Derive the transfer-in idempotency key from a SHA-256 hash of the
 // out-key rather than using a ':linked' suffix convention.

@@ -54,9 +54,14 @@ function errRes(res, status, message) {
   return res.status(status).json({ success: false, error: message });
 }
 
-function toDecimal128(decimalValue) {
-  return mongoose.Types.Decimal128.fromString(decimalValue);
-}
+const toDecimal128 = (value) => {
+  // 1. If it's empty, default to "0"
+  if (value === null || value === undefined) {
+    return mongoose.Types.Decimal128.fromString("0");
+  }
+  // 2. Force the value to become a string before Mongoose touches it
+  return mongoose.Types.Decimal128.fromString(value.toString());
+};
 
 function duplicateResponse(res, ledgerDoc, accountDoc) {
   return res.status(409).json({
@@ -380,10 +385,12 @@ exports.accountTransfer = async (req, res, next) => {
 exports.getHistory = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    const { accountId, category, limit = 20, lastId } = req.query;
+    const { accountId, category, limit = 20, lastId, status } = req.query;
 
     // Base filter: always scope to the authenticated user.
     const query = { userId: new mongoose.Types.ObjectId(userId) };
+
+    query.status = status || 'COMPLETED';
 
     if (accountId) {
       if (!mongoose.Types.ObjectId.isValid(accountId))

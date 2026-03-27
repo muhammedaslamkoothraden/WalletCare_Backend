@@ -14,16 +14,19 @@ function invertDelta({ balanceChange, reservedChange }) {
  *
  * @param {string} direction
  * @param {string} transactionType
- * @param {Decimal} amount - positive amount
+ * @param {any} rawAmount - positive amount (String, Number, or Decimal128)
  * @returns {{ balanceChange: Decimal, reservedChange: Decimal }}
  */
-function computeBalanceDelta(direction, transactionType, amount) {
+function computeBalanceDelta(direction, transactionType, rawAmount) {
+  // 🎯 THE FIX: Force the raw input into a safe decimal.js instance
+  const amount = new Decimal(rawAmount.toString());
   const zero = new Decimal(0);
 
   switch (direction) {
     case 'STANDARD':
     case 'EDIT_REPLACEMENT': {
       return {
+        // Now .negated() will work perfectly!
         balanceChange: transactionType === 'INCOME' ? amount : amount.negated(),
         reservedChange: zero,
       };
