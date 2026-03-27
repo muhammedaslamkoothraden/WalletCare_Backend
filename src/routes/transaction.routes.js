@@ -9,5 +9,6 @@ const transactionController = require('../controllers/transactionController');
 router.get ('/history/:userId',          authMiddleware, transactionController.getHistory);
 router.post('/process',          authMiddleware, transactionController.processTransaction);
 router.post('/account-transfer', authMiddleware, transactionController.accountTransfer);
+router.post('/edit/:originalTxId',    authMiddleware, transactionController.editTransaction);
 
 module.exports = router;

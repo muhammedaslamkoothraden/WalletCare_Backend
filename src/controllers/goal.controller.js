@@ -1,10 +1,11 @@
 'use strict';
 
 const mongoose = require('mongoose');
-const Account  = require('../models/Account');
-const Ledger   = require('../models/ledger');
-const Goal     = require('../models/Goal');
-const { calculateGoalDetails } = require('../services/goal.service');
+const Decimal = require('decimal.js');
+const Account = require("../models/Account");
+const Ledger = require('../models/ledger');
+const Goal = require('../models/Goal');
+const { calculateGoalDetails } = require("../services/goal.service");
 
 // ─── CREATE GOAL ──────────────────────────────────────────────────────────────
 
@@ -167,16 +168,17 @@ exports.deleteGoal = async (req, res) => {
         const goal = await Goal.findOne({ _id: req.params.id, userId: req.user.id }).session(session);
         if (!goal) throw new Error('Goal not found');
 
-        const account = await Account.findById(goal.accountId).session(session);
-        if (!account) throw new Error('Account not found');
+        const account = await Account.findOne({ _id: goal.accountId, userId: req.user.id }).session(session);
+        if (!account) throw new Error("Account not found");
 
         const unlockAmount = goal.currentAmount;
         if (unlockAmount > 0) {
-            const available = parseFloat(account.availableBalance.toString());
-            const reserved  = parseFloat(account.reservedBalance.toString());
+            const available = new Decimal(account.availableBalance.toString());
+            const reserved = new Decimal(account.reservedBalance.toString());
 
-            account.availableBalance = mongoose.Types.Decimal128.fromString((available + unlockAmount).toFixed(2));
-            account.reservedBalance  = mongoose.Types.Decimal128.fromString((reserved  - unlockAmount).toFixed(2));
+            account.availableBalance = mongoose.Types.Decimal128.fromString(available.plus(unlockAmount).toFixed(2));
+            account.reservedBalance = mongoose.Types.Decimal128.fromString(reserved.minus(unlockAmount).toFixed(2));
+
             await account.save({ session });
 
             // ✅ Capture snapshot AFTER save, BEFORE ledger write
@@ -186,16 +188,15 @@ exports.deleteGoal = async (req, res) => {
             };
 
             await Ledger.create([{
-                userId:            req.user.id,
-                accountId:         account._id,
-                amount:            mongoose.Types.Decimal128.fromString(unlockAmount.toFixed(2)),
-                transactionType:   'INCOME',
-                direction:         'GOAL_DEALLOCATION',
-                category:          goal.category,
-                description:       `Goal deleted: ${goal.title}`,
-                idempotencyKey:    new mongoose.Types.ObjectId().toString(),
-                snapshotAvailable: snap.snapshotAvailable,  // ✅
-                snapshotReserved:  snap.snapshotReserved,   // ✅
+                userId: req.user.id,
+                accountId: account._id,
+                amount: mongoose.Types.Decimal128.fromString(unlockAmount.toFixed(2)),
+                transactionType: "INCOME",
+                direction: "GOAL_DEALLOCATION",
+                category: goal.category,
+                description: `Goal deleted: ${goal.title}`,
+                status: 'COMPLETED',
+                idempotencyKey: new mongoose.Types.ObjectId().toString()
             }], { session });
         }
 
@@ -225,17 +226,17 @@ exports.depositToGoal = async (req, res) => {
         if (goal.status === 'completed') throw new Error('Goal already completed');
         if (goal.currentAmount + amount > goal.targetAmount) throw new Error('Deposit exceeds goal target');
 
-        const account = await Account.findById(goal.accountId).session(session);
-        if (!account) throw new Error('Account not found');
+        const account = await Account.findOne({ _id: goal.accountId, userId: req.user.id }).session(session);
+        if (!account) throw new Error("Account not found");
 
-        const available = parseFloat(account.availableBalance.toString());
-        const reserved  = parseFloat(account.reservedBalance.toString());
+        const available = new Decimal(account.availableBalance.toString());
+        const reserved = new Decimal(account.reservedBalance.toString());
 
-        if (available < amount) throw new Error('Insufficient balance');
+        if (available.lt(amount)) throw new Error("Insufficient balance");
 
-        // 1. Move available → reserved
-        account.availableBalance = mongoose.Types.Decimal128.fromString((available - amount).toFixed(2));
-        account.reservedBalance  = mongoose.Types.Decimal128.fromString((reserved  + amount).toFixed(2));
+        // 1. Update Account Balances (Move Available -> Reserved)
+        account.availableBalance = mongoose.Types.Decimal128.fromString(available.minus(amount).toFixed(2));
+        account.reservedBalance = mongoose.Types.Decimal128.fromString(reserved.plus(amount).toFixed(2));
         await account.save({ session });
 
         // ✅ Capture snapshot AFTER save, BEFORE ledger write
@@ -249,26 +250,24 @@ exports.depositToGoal = async (req, res) => {
 
         // 3. Write allocation ledger entry
         await Ledger.create([{
-            userId:            req.user.id,
-            accountId:         account._id,
-            amount:            mongoose.Types.Decimal128.fromString(amount.toFixed(2)),
-            transactionType:   'TRANSFER',
-            direction:         'GOAL_ALLOCATION',
-            category:          goal.category,
-            description:       `Deposit to goal: ${goal.title}`,
-            idempotencyKey:    new mongoose.Types.ObjectId().toString(),
-            snapshotAvailable: snap.snapshotAvailable,  // ✅
-            snapshotReserved:  snap.snapshotReserved,   // ✅
+            userId: req.user.id,
+            accountId: account._id,
+            amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)),
+            transactionType: "TRANSFER",
+            direction: "GOAL_ALLOCATION",
+            category: goal.category,
+            description: `deposit to goal ${goal.category}`,
+            status: 'COMPLETED',
+            idempotencyKey: new mongoose.Types.ObjectId().toString()
         }], { session });
 
         // 4. Handle goal completion
         if (goal.currentAmount >= goal.targetAmount) {
-            goal.status = 'completed';
+            goal.status = "completed";
 
-            const finalReserved = parseFloat(account.reservedBalance.toString());
-            account.reservedBalance = mongoose.Types.Decimal128.fromString(
-                (finalReserved - goal.targetAmount).toFixed(2)
-            );
+            // Deduct from Reserved (The money is now spent/locked for the goal)
+            const finalReserved = new Decimal(account.reservedBalance.toString());
+            account.reservedBalance = mongoose.Types.Decimal128.fromString(finalReserved.minus(goal.targetAmount).toFixed(2));
             await account.save({ session });
 
             // ✅ Capture snapshot AGAIN after second save
@@ -278,16 +277,15 @@ exports.depositToGoal = async (req, res) => {
             };
 
             await Ledger.create([{
-                userId:            req.user.id,
-                accountId:         account._id,
-                amount:            mongoose.Types.Decimal128.fromString(goal.targetAmount.toFixed(2)),
-                transactionType:   'EXPENSE',
-                direction:         'GOAL_COMPLETION',
-                category:          goal.category,
-                description:       `Goal fully funded: ${goal.title}`,
-                idempotencyKey:    new mongoose.Types.ObjectId().toString(),
-                snapshotAvailable: snapCompletion.snapshotAvailable,  // ✅
-                snapshotReserved:  snapCompletion.snapshotReserved,   // ✅
+                userId: req.user.id,
+                accountId: account._id,
+                amount: mongoose.Types.Decimal128.fromString(goal.targetAmount.toFixed(2)),
+                transactionType: "EXPENSE",
+                direction: "GOAL_COMPLETION",
+                category: goal.category,
+                description: `Goal fully funded: ${goal.title}`,
+                status: 'COMPLETED',
+                idempotencyKey: new mongoose.Types.ObjectId().toString()
             }], { session });
         }
 
@@ -317,15 +315,14 @@ exports.withdrawFromGoal = async (req, res) => {
         if (goal.status === 'completed') throw new Error('Cannot withdraw from a completed goal');
         if (goal.currentAmount < amount) throw new Error('Insufficient goal balance');
 
-        const account = await Account.findById(goal.accountId).session(session);
-        if (!account) throw new Error('Account not found');  // ✅ null check
+        const account = await Account.findOne({ _id: goal.accountId, userId: req.user.id }).session(session);
+        if (!account) throw new Error("Account not found");
 
-        const available = parseFloat(account.availableBalance.toString());
-        const reserved  = parseFloat(account.reservedBalance.toString());
+        const available = new Decimal(account.availableBalance.toString());
+        const reserved = new Decimal(account.reservedBalance.toString());
 
-        // Move reserved → available
-        account.reservedBalance  = mongoose.Types.Decimal128.fromString((reserved  - amount).toFixed(2));
-        account.availableBalance = mongoose.Types.Decimal128.fromString((available + amount).toFixed(2));
+        account.reservedBalance = mongoose.Types.Decimal128.fromString(reserved.minus(amount).toFixed(2));
+        account.availableBalance = mongoose.Types.Decimal128.fromString(available.plus(amount).toFixed(2));
 
         goal.currentAmount -= amount;
         if (goal.currentAmount < goal.targetAmount) goal.status = 'active';
@@ -341,16 +338,15 @@ exports.withdrawFromGoal = async (req, res) => {
         await goal.save({ session });
 
         await Ledger.create([{
-            userId:            req.user.id,
-            accountId:         account._id,
-            amount:            mongoose.Types.Decimal128.fromString(amount.toFixed(2)),
-            transactionType:   'TRANSFER',
-            direction:         'GOAL_DEALLOCATION',
-            category:          goal.category,
-            description:       `Withdraw from goal: ${goal.title}`,
-            idempotencyKey:    new mongoose.Types.ObjectId().toString(),
-            snapshotAvailable: snap.snapshotAvailable,  // ✅
-            snapshotReserved:  snap.snapshotReserved,   // ✅
+            userId: req.user.id,
+            accountId: account._id,
+            amount: mongoose.Types.Decimal128.fromString(amount.toFixed(2)),
+            transactionType: "TRANSFER",
+            direction: "GOAL_DEALLOCATION",
+            category: goal.category,
+            description: `Withdraw from goal: ${goal.title}`,
+            status: 'COMPLETED',
+            idempotencyKey: new mongoose.Types.ObjectId().toString()
         }], { session });
 
         await session.commitTransaction();
@@ -393,104 +389,53 @@ exports.getAccountGoalTransitions = async (req, res) => {
     try {
         const { accountId } = req.params;
 
+        // 1. Ownership check
         const account = await Account.findOne({ _id: accountId, userId: req.user.id });
         if (!account) {
-            return res.status(404).json({ success: false, message: 'Account not found' });
+            return res.status(404).json({ success: false, message: "Account not found" });
         }
 
+        // 2. Fetch only the "movement" entries
         const history = await Ledger.find({
-            accountId,
-            direction: { $in: ['GOAL_ALLOCATION', 'GOAL_DEALLOCATION'] },
+            accountId: accountId,
+            direction: { $in: ["GOAL_ALLOCATION", "GOAL_DEALLOCATION"] }
         })
-            .sort({ createdAt: -1 })
-            .select('amount direction description createdAt');
+            .sort({ createdAt: -1 }) // Show most recent first
+            .select('amount direction description createdAt'); // Only send necessary fields
 
-        res.status(200).json({ success: true, data: history });
+        res.status(200).json({
+            success: true,
+            data: history
+        });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
 };
 
-// ─── SHARE GOAL ───────────────────────────────────────────────────────────────
-
+// SHARING GOAL WITH ANOTHER USER
 exports.shareGoal = async (req, res) => {
     try {
-        const { id }     = req.params;
+        const { id } = req.params;
         const { userId } = req.body;
 
-        // ✅ Ownership check + try/catch
+        if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(userId)) {
+            return res.status(400).json({ success: false, message: "Invalid goal or user ID" });
+        }
+
         const goal = await Goal.findOne({ _id: id, userId: req.user.id });
-        if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
 
-        goal.sharedWith.push(userId);
-        await goal.save();
+        if (!goal) {
+            return res.status(404).json({ success: false, message: "Goal not found or not authorized" });
+        }
 
-        res.json({ success: true, message: 'Goal shared successfully' });
+        // Prevent duplicate share entries
+        if (!goal.sharedWith.includes(userId)) {
+            goal.sharedWith.push(userId);
+            await goal.save();
+        }
+
+        res.json({ success: true, message: "Goal shared successfully" });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
 };
-//akbar shaheed is a man of integrity and  
-
-//history for a specific goal (all transactions including completion)
-exports.getGoalHistory = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const goalId = req.params.id;   
-
-    // Validate goalId
-    if (!mongoose.Types.ObjectId.isValid(goalId)) {
-      return res.status(400).json({ success: false, message: 'Invalid goalId' });
-    }
-
-    // Verify the goal belongs to this user
-    const goal = await Goal.findOne({ _id: goalId, userId });
-    if (!goal) {
-      return res.status(404).json({ success: false, message: 'Goal not found' });
-    }
-
-    // Pagination
-    const { limit = 20, lastId } = req.query;
-    const parsed      = parseInt(limit, 10);
-    const parsedLimit = Math.min(isNaN(parsed) || parsed < 1 ? 20 : parsed, 100);
-
-    // Build ledger query
-    const query = {
-      userId,
-      accountId: goal.accountId,
-      direction: { $in: ['GOAL_ALLOCATION', 'GOAL_DEALLOCATION', 'GOAL_COMPLETION'] },
-    };
-
-    if (lastId) {
-      if (!mongoose.Types.ObjectId.isValid(lastId)) {
-        return res.status(400).json({ success: false, message: 'Invalid lastId cursor' });
-      }
-      query._id = { $lt: new mongoose.Types.ObjectId(lastId) };
-    }
-
-    const history = await Ledger.find(query)
-      .sort({ _id: -1 })
-      .limit(parsedLimit)
-      .lean();
-
-    return res.status(200).json({
-      success:    true,
-      goalId,
-      goalTitle:  goal.title,
-      count:      history.length,
-      nextCursor: history.length === parsedLimit ? history.at(-1)._id : null,
-      data:       history.map((tx) => ({
-        txid:             tx._id,
-        direction:        tx.direction,
-        amount:           tx.amount.toString(),
-        description:      tx.description,
-        snapshotAvailable: tx.snapshotAvailable?.toString() ?? '0.00',
-        snapshotReserved:  tx.snapshotReserved?.toString()  ?? '0.00',
-        createdAt:        tx.createdAt,
-      })),
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
