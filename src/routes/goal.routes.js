@@ -1,7 +1,5 @@
 const express = require("express");
 const router = express.Router();
-
-const protect = require("../middlewares/auth.middleware");
 const { generalLimiter } = require("../middlewares/rateLimit.middleware");
 
 const {
@@ -16,16 +14,18 @@ const {
   getAccountGoalTransitions,
   getGoalById,
   shareGoal,
+  getGoalHistory
 } = require("../controllers/goal.controller");
 
-router.use(protect);
 
 // Static & summary routes — must be above /:id routes
 router.get("/summary", getGoalSummary);
 router.get("/analytics/prediction", getGoalPrediction);
 
-// History routes
+// --- 2. History Routes ---
+// Gets only ALLOCATIONS and DEALLOCATIONS for a specific account
 router.get("/account/:accountId/history", getAccountGoalTransitions);
+router.get("/:id/history", getGoalHistory); // Full history for a specific goal
 
 // Collection routes
 router.get("/", generalLimiter, getGoals);
