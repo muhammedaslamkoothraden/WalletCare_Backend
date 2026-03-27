@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const Ledger = require('../models/ledger');
+const Ledger = require('../models/Ledger');
 const Account = require('../models/Account');
 const Goal = require('../models/Goal');
 
@@ -24,12 +24,12 @@ exports.getAnalyticsDashboard = async (req, res) => {
     }
 
     // --- 2. Build Dynamic Match Stage ---
-    const matchStage = { 
-      userId, 
-      status: 'COMPLETED', 
+    const matchStage = {
+      userId,
+      status: 'COMPLETED',
       createdAt: { $gte: startDate },
       // Important: Exclude internal goal movements from Income/Expense totals
-      direction: 'NORMAL' 
+      direction: 'NORMAL'
     };
 
     // Filter by specific account if provided and not "all"
@@ -54,10 +54,10 @@ exports.getAnalyticsDashboard = async (req, res) => {
 
       // C. Reserved Balance (Current snapshot, not date-dependent)
       Account.aggregate([
-        { 
-          $match: (accountId && accountId !== 'all') 
-            ? { _id: new mongoose.Types.ObjectId(accountId) } 
-            : { userId, status: 'ACTIVE' } 
+        {
+          $match: (accountId && accountId !== 'all')
+            ? { _id: new mongoose.Types.ObjectId(accountId) }
+            : { userId, status: 'ACTIVE' }
         },
         { $group: { _id: null, totalReserved: { $sum: '$reservedBalance' } } }
       ])
@@ -231,138 +231,138 @@ exports.getMonthlyGoalSavings = async (req, res) => {
 
 // ANALYTICS: GOAL PROGRESS DISTRIBUTION
 exports.goalProgressDistribution =
-async (req, res) => {
+  async (req, res) => {
 
-  const stats =
-  await Goal.aggregate([
+    const stats =
+      await Goal.aggregate([
 
-    {
-      $match: {
-        userId: req.user.id
-      }
-    },
+        {
+          $match: {
+            userId: req.user.id
+          }
+        },
 
-    {
-      $project: {
+        {
+          $project: {
 
-        progress: {
-          $multiply: [
-            {
-              $divide: [
-                "$currentAmount",
-                "$targetAmount"
+            progress: {
+              $multiply: [
+                {
+                  $divide: [
+                    "$currentAmount",
+                    "$targetAmount"
+                  ]
+                },
+                100
               ]
-            },
-            100
-          ]
+            }
+
+          }
+        },
+
+        {
+          $bucket: {
+
+            groupBy: "$progress",
+
+            boundaries: [0, 25, 50, 75, 100],
+
+            default: "completed",
+
+            output: {
+              count: { $sum: 1 }
+            }
+
+          }
+
         }
 
-      }
-    },
+      ]);
 
-    {
-      $bucket: {
+    res.json({
+      success: true,
+      data: stats
+    });
 
-        groupBy: "$progress",
-
-        boundaries: [0,25,50,75,100],
-
-        default: "completed",
-
-        output: {
-          count: { $sum: 1 }
-        }
-
-      }
-
-    }
-
-  ]);
-
-  res.json({
-    success: true,
-    data: stats
-  });
-
-};
+  };
 
 // ANALYTICS: AVERAGE COMPLETION TIME FOR GOALS
 exports.averageCompletionTime =
-async (req, res) => {
+  async (req, res) => {
 
-  const stats =
-  await Goal.aggregate([
+    const stats =
+      await Goal.aggregate([
 
-    {
-      $match: {
-        status: "completed"
-      }
-    },
+        {
+          $match: {
+            status: "completed"
+          }
+        },
 
-    {
-      $project: {
+        {
+          $project: {
 
-        duration: {
-          $subtract: [
-            "$completedAt",
-            "$createdAt"
-          ]
+            duration: {
+              $subtract: [
+                "$completedAt",
+                "$createdAt"
+              ]
+            }
+
+          }
+        },
+
+        {
+          $group: {
+
+            _id: null,
+
+            avgTime: {
+              $avg: "$duration"
+            }
+
+          }
         }
 
-      }
-    },
+      ]);
 
-    {
-      $group: {
+    res.json({
+      success: true,
+      data: stats
+    });
 
-        _id: null,
-
-        avgTime: {
-          $avg: "$duration"
-        }
-
-      }
-    }
-
-  ]);
-
-  res.json({
-    success: true,
-    data: stats
-  });
-
-};
+  };
 
 //  ANALYTICS: TOTAL SAVED AMOUNT BY CATEGORY
 exports.categorySavings =
-async (req, res) => {
+  async (req, res) => {
 
-  const stats =
-  await Goal.aggregate([
+    const stats =
+      await Goal.aggregate([
 
-    {
-      $match: {
-        userId: req.user.id
-      }
-    },
+        {
+          $match: {
+            userId: req.user.id
+          }
+        },
 
-    {
-      $group: {
+        {
+          $group: {
 
-        _id: "$category",
+            _id: "$category",
 
-        totalSaved: {
-          $sum: "$currentAmount"
+            totalSaved: {
+              $sum: "$currentAmount"
+            }
+
+          }
         }
 
-      }
-    }
+      ]);
 
-  ]);
+    res.json({
+      success: true,
+      data: stats
+    });
 
-  res.json({
-    success: true,
-    data: stats
-  });
-
-};
+  };

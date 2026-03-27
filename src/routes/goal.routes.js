@@ -1,7 +1,8 @@
 const express = require("express");
-const goalLimiter = require("../middlewares/rateLimiter");
 const router = express.Router();
-const authMiddleware = require("../middlewares/auth");
+
+const protect = require("../middlewares/auth.middleware");
+const { generalLimiter } = require("../middlewares/rateLimit.middleware");
 
 const {
   createGoal,
@@ -9,36 +10,33 @@ const {
   updateGoal,
   deleteGoal,
   getGoalSummary,
-  depositToGoal,   
+  depositToGoal,
   withdrawFromGoal,
   getGoalPrediction,
-  getAccountGoalTransitions, // The new history function
+  getAccountGoalTransitions,
   getGoalById,
-  shareGoal
+  shareGoal,
 } = require("../controllers/goal.controller");
 
-// --- 1. Static & Summary Routes ---
-// Always keep these above /:id routes
-router.get("/summary", authMiddleware, getGoalSummary);
-router.get("/analytics/prediction", authMiddleware, getGoalPrediction);
+router.use(protect);
 
-// --- 2. History Routes ---
-// Gets only ALLOCATIONS and DEALLOCATIONS for a specific account
-router.get("/account/:accountId/history", authMiddleware, getAccountGoalTransitions);
+// Static & summary routes — must be above /:id routes
+router.get("/summary", getGoalSummary);
+router.get("/analytics/prediction", getGoalPrediction);
 
-// --- 3. Collection Routes ---
-router.get("/", authMiddleware, goalLimiter, getGoals);
-router.post("/", authMiddleware, goalLimiter, createGoal);
+// History routes
+router.get("/account/:accountId/history", getAccountGoalTransitions);
 
-// --- 4. Individual ID-based Routes ---
-// Added missing authMiddleware to deposit
-router.post("/:id/deposit", authMiddleware, goalLimiter, depositToGoal);
-router.post("/:id/withdraw", authMiddleware, goalLimiter, withdrawFromGoal);
+// Collection routes
+router.get("/", generalLimiter, getGoals);
+router.post("/", generalLimiter, createGoal);
 
-router.put("/:id", authMiddleware, updateGoal);
-router.delete("/:id", authMiddleware, deleteGoal);
-router.get("/:id", authMiddleware, getGoalById); // Get a specific goal by ID 
-router.post("/:id/share",authMiddleware, shareGoal);
-
+// Individual ID-based routes
+router.get("/:id", getGoalById);
+router.put("/:id", updateGoal);
+router.delete("/:id", deleteGoal);
+router.post("/:id/deposit", generalLimiter, depositToGoal);
+router.post("/:id/withdraw", generalLimiter, withdrawFromGoal);
+router.post("/:id/share", shareGoal);
 
 module.exports = router;

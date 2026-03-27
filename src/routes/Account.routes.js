@@ -1,14 +1,14 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const accountController = require('../controllers/AccountController');
 
+const accountController = require("../controllers/AccountController");
+const protect = require("../middlewares/auth.middleware");
 
-const authMiddleware = require('../middlewares/auth'); 
+// Protect all account routes
+router.use(protect);
 
-router.post('/create', authMiddleware, accountController.createAccount);
-
-router.get('/balances/:userId', authMiddleware, accountController.getAccountBalances);
-// routes/accountRoutes.js
-router.put('/:accountId/primary', authMiddleware, accountController.setAccountAsDefault );
+router.post("/create", accountController.createAccount);
+router.get("/balances", accountController.getAccountBalances);
+router.put("/:accountId/primary", accountController.setAccountAsDefault);
 
 module.exports = router;
