@@ -2,7 +2,7 @@
 
 const mongoose = require('mongoose');
 const Decimal = require('decimal.js');
-const Ledger = require('../models/ledger');
+const Ledger = require('../models/Ledger');
 const Account = require('../models/Account');
 const { assertString, StringValidationError } = require('../helpers/sanitize');
 const {

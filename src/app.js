@@ -1,18 +1,18 @@
 const express = require("express");
-require("dotenv").config();
-
 const cors = require("cors");
 const helmet = require("helmet");
 
+const authRoutes = require("./routes/auth.routes");
+const otpRoutes = require("./routes/otp.routes");
+const userRoutes = require("./routes/user.routes");
 const AccountRoutes = require("./routes/Account.routes");
 const transactionRoutes = require("./routes/transaction.routes");
-const authRoutes = require("./routes/auth.routes");
 const goalRoutes = require("./routes/goal.routes");
 const analyticsRoutes = require("./routes/analytics.routes");
-
-const authMiddleware = require("./middlewares/auth");
 const notificationRoutes = require("./routes/notification.routes");
+const feedbackRoutes = require("./routes/feedback.routes");
 
+const authMiddleware = require("./middlewares/auth.middleware");
 
 const app = express();
 
@@ -21,19 +21,22 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json());
 
-// Routes
-app.use("/api/auth", authRoutes);
-app.use("/api/account",authMiddleware,AccountRoutes);
-app.use("/api/transaction", transactionRoutes);
-app.use("/api/goals", authMiddleware, goalRoutes);
-app.use("/notifications", notificationRoutes);
-app.use("/api/analytics", analyticsRoutes);
-
-
-
 // Health check
 app.get("/", (req, res) => {
   res.send("WalletCare API is running...");
 });
+
+// Public routes
+app.use("/api/auth", authRoutes);
+app.use("/api/otp", otpRoutes);
+
+// Protected routes
+app.use("/api/user", authMiddleware, userRoutes);
+app.use("/api/account", authMiddleware, AccountRoutes);
+app.use("/api/transaction", authMiddleware, transactionRoutes);
+app.use("/api/goals", authMiddleware, goalRoutes);
+app.use("/api/analytics", authMiddleware, analyticsRoutes);
+app.use("/api/notifications", authMiddleware, notificationRoutes);
+app.use("/api/feedback", authMiddleware, feedbackRoutes);
 
 module.exports = app;

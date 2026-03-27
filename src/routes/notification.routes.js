@@ -5,7 +5,7 @@ const notificationController =
     require("../controllers/notification.controller");
 
 const authMiddleware =
-    require("../middlewares/auth");
+    require("../middlewares/auth.middleware");
 
 router.get("/", authMiddleware, notificationController.getUserNotifications);
 

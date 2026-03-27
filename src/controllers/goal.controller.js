@@ -3,7 +3,7 @@
 const mongoose = require('mongoose');
 const Decimal = require('decimal.js');
 const Account = require("../models/Account");
-const Ledger = require('../models/ledger');
+const Ledger = require('../models/Ledger');
 const Goal = require('../models/Goal');
 const { calculateGoalDetails } = require("../services/goal.service");
 
