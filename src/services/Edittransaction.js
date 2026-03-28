@@ -3,7 +3,7 @@
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const Decimal = require('decimal.js');
-const Ledger = require('../models/ledger');
+const Ledger = require('../models/Ledger');
 const Account = require('../models/Account');
 const { StringValidationError, assertString } = require('../helpers/sanitize');
 const {
@@ -81,6 +81,7 @@ async function editTransaction(params) {
     category,
     description,
     partyName,
+    transactedAt,
   } = params;
 
   // ── Input validation (before opening a session) ────────────────────────────
@@ -138,6 +139,17 @@ async function editTransaction(params) {
       e.message,
       400
     );
+  }
+
+  let parsedDateObj;
+  if (transactedAt !== undefined && transactedAt !== null) {
+    const candidate = new Date(transactedAt);
+    if (isNaN(candidate.getTime())) {
+      throw new EditTransactionError('transactedAt must be a valid date', 400);
+    }
+    parsedDateObj = candidate;
+  } else {
+    parsedDateObj = new Date();
   }
 
   // Deterministic sub-keys — client supplies one key, we derive both.
@@ -269,6 +281,7 @@ async function editTransaction(params) {
         linkedAccountId: null,
         parentTransactionId: null,
         status: 'COMPLETED',
+        transactedAt: parsedDateObj,
       }], { session });
 
       // ── Step 8: Void the original ────────────────────────────────────────
@@ -293,8 +306,8 @@ async function editTransaction(params) {
         duplicate: false,
         originalTxId: original._id.toString(),
         replacementTxId: replacement._id.toString(),
-        availableBalance: netAvailable.toFixed(2),
-        reservedBalance: netReserved.toFixed(2),
+        availableBalance: netAvailable.toString(),
+        reservedBalance: netReserved.toString(),
       };
 
     } catch (error) {
@@ -363,6 +376,7 @@ exports.editTransaction = async (req, res, next) => {
     category,
     description,
     partyName,
+    transactedAt,
   } = req.body;
 
   // ── Required field fast-exit ───────────────────────────────────────────────
@@ -371,7 +385,7 @@ exports.editTransaction = async (req, res, next) => {
   ].find((f) => !req.body[f]);
 
   if (missingField) {
-    return res.status(400).json({ success: false, error: `${missingField} is required` });
+    return res.status(400).json({ success: false, message: `${missingField} is required` });
   }
 
   try {
@@ -390,14 +404,15 @@ exports.editTransaction = async (req, res, next) => {
       category,
       description,
       partyName,
+      transactedAt,
     });
 
     const status = result.duplicate ? 409 : 201;
-    return res.status(status).json({ success: true, ...result });
+    return res.status(status).json({ success: true, data: result });
 
   } catch (error) {
     if (error instanceof EditTransactionError) {
-      return res.status(error.statusCode).json({ success: false, error: error.message });
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
     next(error);
   }

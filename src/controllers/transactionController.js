@@ -94,10 +94,17 @@ exports.processTransaction = async (req, res, next) => {
       idempotencyKey: assertString(req.body.idempotencyKey, 'idempotencyKey', { maxLength: 128 }),
       parentTransactionId: req.body.parentTransactionId,
       linkedAccountId: req.body.linkedAccountId,
+      transactedAt: req.body.transactedAt,
     };
 
     if (input.idempotencyKey.length < 8) {
       throw new StringValidationError('idempotencyKey must be at least 8 characters');
+    }
+
+    if (input.transactedAt !== undefined && input.transactedAt !== null) {
+      if (isNaN(new Date(req.body.transactedAt).getTime())) {
+        throw new Error('transactedAt must be a valid date');
+      }
     }
   } catch (error) {
     return errRes(res, 400, error.message);
@@ -105,7 +112,8 @@ exports.processTransaction = async (req, res, next) => {
 
   const {
     accountId, amount: safeAmount, transactionType, direction, category: safeCategory,
-    description: safeDescription, idempotencyKey, parentTransactionId, linkedAccountId
+    description: safeDescription, idempotencyKey, parentTransactionId, linkedAccountId,
+    transactedAt,
   } = input;
 
   // ── Step 2: Structural validation ─────────────────────────────────────────
@@ -253,6 +261,7 @@ exports.processTransaction = async (req, res, next) => {
         linkedAccountId: linkedAccountId || null,
         parentTransactionId: parentTransactionId || null,
         status: 'COMPLETED',
+        transactedAt: transactedAt ? new Date(transactedAt) : new Date(),
       }], { session });
 
       // ── Update cached account balance ────────────────────────────────────
@@ -334,6 +343,7 @@ exports.accountTransfer = async (req, res, next) => {
       category: sanitizeCategory(req.body.category),
       description: sanitizeOptionalDescription(req.body.description),
       idempotencyKey: assertString(req.body.idempotencyKey, 'idempotencyKey', { maxLength: 128 }),
+      transactedAt: req.body.transactedAt,
     };
 
     if (input.idempotencyKey.length < 8) {
@@ -345,7 +355,7 @@ exports.accountTransfer = async (req, res, next) => {
 
   const {
     fromAccountId, toAccountId, amount: safeAmount,
-    category: safeCategory, description: safeDescription, idempotencyKey
+    category: safeCategory, description: safeDescription, idempotencyKey, transactedAt,
   } = input;
 
   // ── Step 2: ObjectId validation ───────────────────────────────────────────
@@ -367,6 +377,7 @@ exports.accountTransfer = async (req, res, next) => {
       category: safeCategory,
       idempotencyKey,
       description: safeDescription,
+      transactedAt,
     });
 
     if (result.duplicate) return res.status(409).json({ success: true, ...result });
@@ -385,7 +396,7 @@ exports.accountTransfer = async (req, res, next) => {
 exports.getHistory = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    const { accountId, category, limit = 20, lastId, status } = req.query;
+    const { accountId, category, limit = 20, lastId, status, startDate, endDate } = req.query;
 
     // Base filter: always scope to the authenticated user.
     const query = { userId: new mongoose.Types.ObjectId(userId) };
@@ -405,6 +416,12 @@ exports.getHistory = async (req, res, next) => {
       query.accountId = new mongoose.Types.ObjectId(accountId);
     }
 
+    if (startDate || endDate) {
+      query.transactedAt = {};
+      if (startDate) query.transactedAt.$gte = new Date(startDate);
+      if (endDate) query.transactedAt.$lte = new Date(endDate);
+    }
+
     // ── Sanitize category query param ──────────────────────────────────────
     // Query params carry the same injection risk as body params.
     // assertString rejects non-strings, trims, and strips control characters.
@@ -422,7 +439,19 @@ exports.getHistory = async (req, res, next) => {
     if (lastId) {
       if (!mongoose.Types.ObjectId.isValid(lastId))
         return errRes(res, 400, 'Invalid lastId cursor');
-      query._id = { $lt: new mongoose.Types.ObjectId(lastId) };
+
+      // Fetch the reference transaction to get its exact transactedAt date
+      const lastTx = await Ledger.findById(lastId).select('transactedAt').lean();
+      if (lastTx) {
+        // Compound cursor: get older dates, OR same date but older _id
+        query.$or = [
+          { transactedAt: { $lt: lastTx.transactedAt } },
+          {
+            transactedAt: lastTx.transactedAt,
+            _id: { $lt: new mongoose.Types.ObjectId(lastId) },
+          },
+        ];
+      }
     }
 
     const parsed = parseInt(limit, 10);
@@ -430,7 +459,7 @@ exports.getHistory = async (req, res, next) => {
 
     const history = await Ledger.find(query)
       .populate('accountId', 'name')
-      .sort({ _id: -1 })
+      .sort({ transactedAt: -1, _id: -1 })
       .limit(parsedLimit)
       .lean();
 

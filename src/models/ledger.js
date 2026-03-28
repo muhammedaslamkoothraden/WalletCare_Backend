@@ -20,6 +20,7 @@ const TRANSFER_DIRECTIONS = new Set([
 const IMMUTABLE_FIELDS = new Set([
   'amount', 'userId', 'accountId', 'transactionType',
   'direction', 'parentTransactionId', 'category', 'replacesTransactionId',
+  'transactedAt',
 ]);
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -136,6 +137,13 @@ const LedgerSchema = new mongoose.Schema(
       maxlength: [255, 'description cannot exceed 255 characters'],
     },
 
+
+    transactedAt: {
+      type: Date,
+      required: true,
+      default: Date.now,
+      index: true,
+    },
 
     status: {
       type: String,

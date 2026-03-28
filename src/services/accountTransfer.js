@@ -67,9 +67,13 @@ function _duplicateTransferResponse(outEntry, inEntry, fromAccount, toAccount) {
 
 async function initiateTransfer({
   userId, fromAccountId, toAccountId,
-  safeAmount, category, idempotencyKey, description,
+  safeAmount, category, idempotencyKey, description, transactedAt,
 }) {
   const MAX_RETRIES = 3;
+
+  const parsedDateObj = (transactedAt && !isNaN(new Date(transactedAt).getTime()))
+    ? new Date(transactedAt)
+    : new Date();
 
   // FIX: Derive the in-leg key once, outside the retry loop.
   // It is purely deterministic so recomputing it per attempt is wasteful,
@@ -189,6 +193,7 @@ async function initiateTransfer({
         parentTransactionId: null,
         status: 'COMPLETED',
         transferGroupId,                         // ← shared between both legs
+        transactedAt: parsedDateObj,             // ← shared timestamp for both legs
       });
 
       const inEntry = new Ledger({
@@ -204,6 +209,7 @@ async function initiateTransfer({
         parentTransactionId: null,
         status: 'COMPLETED',
         transferGroupId,                          // ← same group as OUT leg
+        transactedAt: parsedDateObj,              // ← same shared timestamp
       });
 
       await Promise.all([
