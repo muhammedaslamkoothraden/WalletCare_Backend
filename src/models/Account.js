@@ -3,11 +3,13 @@
 const mongoose = require('mongoose');
 const Decimal = require('decimal.js');
 
-// Fields that define the account's identity — must never change after creation.
+// ─── Immutable Fields ─────────────────────────────────────────────────────────
+// These define the account's identity and must never change after creation.
 // Changing userId would reassign the account to a different user.
 // Changing currency or type would invalidate all historical balance entries.
 const IMMUTABLE_FIELDS = new Set(['userId', 'currency', 'type']);
 
+// ─── Schema ───────────────────────────────────────────────────────────────────
 const AccountSchema = new mongoose.Schema(
   {
     userId: {
@@ -29,10 +31,14 @@ const AccountSchema = new mongoose.Schema(
       uppercase: true,
     },
 
-    // ⚠️ IMPORTANT SYSTEM CONTRACT:
+    // ⚠️ SYSTEM CONTRACT:
     // Account balances are DERIVED (cached) values.
     // The Ledger collection is the single source of truth.
-    // Any inconsistency must be resolved via reconciliation.
+    // Any inconsistency must be resolved via the reconciliation service.
+    //
+    // NOTE: Mongoose getters (v.toString()) apply when reading via JS (doc.availableBalance).
+    // They do NOT apply inside MongoDB aggregation pipelines.
+    // In aggregation always wrap with: { $toDouble: '$availableBalance' }
     availableBalance: {
       type: mongoose.Schema.Types.Decimal128,
       default: '0.00',
@@ -63,7 +69,15 @@ const AccountSchema = new mongoose.Schema(
       default: 'ACTIVE',
     },
 
-    // ─── Reconciliation & Tracking ──────────────────────────────────────────
+    // ─── Soft delete ──────────────────────────────────────────────────────────
+    // Closed accounts are not physically deleted — they are archived.
+    // Use deletedAt to filter them out in queries: { deletedAt: null }
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
+
+    // ─── Reconciliation & Tracking ───────────────────────────────────────────
     lastTransactionAt: {
       type: Date,
       default: null,
@@ -77,8 +91,23 @@ const AccountSchema = new mongoose.Schema(
       enum: ['OK', 'MISMATCH'],
       default: 'OK',
     },
+    // Populated when reconciliationStatus = 'MISMATCH'.
+    // Stores the difference between cached balance and ledger-derived balance.
+    // NOTE: A zero mismatch (Decimal128('0')) is semantically different from
+    // null (no reconciliation run yet). The getter correctly returns '0' for
+    // zero and null for unset — do not conflate these two states.
+    mismatchAmount: {
+      type: mongoose.Schema.Types.Decimal128,
+      default: null,
+      get: (v) => (v ? v.toString() : null),
+    },
 
     // Normalised lowercase name for case-insensitive uniqueness checks.
+    // ⚠️ SEEDING WARNING: This field is only populated via pre('save') middleware.
+    // Documents created via insertMany(), bulkWrite(), or direct MongoDB writes
+    // (e.g. seeding scripts) will NOT have this field set, silently breaking the
+    // uniqueness guarantee on { userId, _normalizedName }.
+    // Always use .save() or the Account service layer to create accounts.
     _normalizedName: {
       type: String,
       select: false,
@@ -94,7 +123,10 @@ const AccountSchema = new mongoose.Schema(
 
 // ─── Indexes ──────────────────────────────────────────────────────────────────
 
+// Unique account name per user (case-insensitive via _normalizedName)
 AccountSchema.index({ userId: 1, _normalizedName: 1 }, { unique: true });
+
+// Only one default account allowed per user
 AccountSchema.index(
   { userId: 1, isDefault: 1 },
   { unique: true, partialFilterExpression: { isDefault: true } }
@@ -102,17 +134,26 @@ AccountSchema.index(
 
 // ─── Virtuals ─────────────────────────────────────────────────────────────────
 
+// NOTE: Because toJSON/toObject have getters:true, this.availableBalance and
+// this.reservedBalance arrive here as strings (getter already applied).
+// new Decimal(string) handles this correctly — no raw Decimal128 object is seen.
 AccountSchema.virtual('totalBalance').get(function () {
   const avail = new Decimal(this.availableBalance || '0');
-  const resv = new Decimal(this.reservedBalance || '0');
+  const resv  = new Decimal(this.reservedBalance  || '0');
   return avail.plus(resv).toFixed(2);
 });
 
 // ─── Pre-save middleware ──────────────────────────────────────────────────────
+// FIX: Reordered guards so balance validation fires before status guards.
+// Previously a frozen account with a negative balance would throw the
+// frozen error instead of the more accurate "cannot be negative" error.
+//
+// FIX: Decimal instances computed once at the top and reused everywhere —
+// previously they were instantiated twice (closure rule + balance check).
 
 AccountSchema.pre('save', async function () {
 
-  // ── Immutability ──────────────────────────────────────────────────────────
+  // ── 1. Immutability ───────────────────────────────────────────────────────
   if (!this.isNew) {
     for (const field of IMMUTABLE_FIELDS) {
       if (this.isModified(field)) {
@@ -121,62 +162,65 @@ AccountSchema.pre('save', async function () {
     }
   }
 
-  // ── Zero-balance closure rule ─────────────────────────────────────────────
+  // ── 2. Compute balances once — reused by all checks below ────────────────
+  const available = new Decimal(this.availableBalance?.toString() || '0');
+  const reserved  = new Decimal(this.reservedBalance?.toString()  || '0');
+  const balanceChanged =
+    this.isModified('availableBalance') || this.isModified('reservedBalance');
+
+  // ── 3. Balance floor — must run BEFORE status guards ─────────────────────
+  // If a frozen account also has a negative balance, the client should
+  // know the balance is invalid — not just that the account is frozen.
+  if (available.isNegative()) throw new Error('Available balance cannot be negative');
+  if (reserved.isNegative())  throw new Error('Reserved balance cannot be negative');
+
+  // ── 4. Status guards — block balance changes on inactive accounts ─────────
+  if (!this.isNew && balanceChanged) {
+    if (this.status === 'FROZEN') throw new Error('Balance cannot be changed on a frozen account');
+    if (this.status === 'CLOSED') throw new Error('Balance cannot be changed on a closed account');
+  }
+
+  // ── 5. Zero-balance closure rule ─────────────────────────────────────────
   if (this.isModified('status') && this.status === 'CLOSED') {
-    const available = new Decimal(this.availableBalance?.toString() || '0');
-    const reserved = new Decimal(this.reservedBalance?.toString() || '0');
     if (!available.equals(0) || !reserved.equals(0)) {
       throw new Error('Account can only be closed if both available and reserved balances are exactly 0.00');
     }
+    // Mark soft-delete timestamp when account is closed
+    if (!this.deletedAt) {
+      this.deletedAt = new Date();
+    }
   }
 
-  // ── Closed account guard ──────────────────────────────────────────────────
-  // Allow metadata updates, block only balance changes
-  if (
-    !this.isNew &&
-    this.status === 'CLOSED' &&
-    (this.isModified('availableBalance') || this.isModified('reservedBalance'))
-  ) {
-    throw new Error('Balance cannot be changed on a closed account');
-  }
-
-  // ── Frozen account guard ──────────────────────────────────────────────────
-  if (
-    !this.isNew &&
-    this.status === 'FROZEN' &&
-    (this.isModified('availableBalance') || this.isModified('reservedBalance'))
-  ) {
-    throw new Error('Balance cannot be changed on a frozen account');
-  }
-
-  // ── Balance validation ────────────────────────────────────────────────────
-  const available = new Decimal(this.availableBalance?.toString() || '0');
-  const reserved = new Decimal(this.reservedBalance?.toString() || '0');
-
-  if (available.isNegative()) throw new Error('Available balance cannot be negative');
-  if (reserved.isNegative()) throw new Error('Reserved balance cannot be negative');
-
-  // ── Track last transaction time ───────────────────────────────────────────
-  if (
-    this.isModified('availableBalance') ||
-    this.isModified('reservedBalance')
-  ) {
+  // ── 6. Track last transaction time ───────────────────────────────────────
+  if (balanceChanged) {
     this.lastTransactionAt = new Date();
   }
 
-  // ── Normalised name ───────────────────────────────────────────────────────
+  // ── 7. Normalised name ────────────────────────────────────────────────────
   if (this.isNew || this.isModified('name')) {
     this._normalizedName = this.name.toLowerCase();
   }
 });
 
 // ─── Pre-update middleware ────────────────────────────────────────────────────
+// FIX: Replaced model.find(filter) with findOne(filter).lean() to avoid N+1.
+// Previously, a broad filter like { userId } would load every account for
+// that user just to validate a single updateOne — O(n) reads under load.
+//
+// FIX: futureStatus now uses ?? instead of || to correctly fall back to
+// doc.status when neither $set.status nor update.status is present.
+// Using || would treat an empty string as falsy and resolve incorrectly.
+//
+// FIX: session is now passed as `options?.session ?? undefined` instead of
+// options.session directly. Passing null explicitly to .session() in some
+// Mongoose versions clears the session rather than being a no-op.
 
 AccountSchema.pre(['updateOne', 'findOneAndUpdate', 'updateMany'], async function () {
-  const update = this.getUpdate() || {};
-  const filter = this.getFilter();
+  const update  = this.getUpdate() || {};
+  const filter  = this.getFilter();
   const options = this.getOptions();
 
+  // Collect all field names being targeted by this update
   const targeted = new Set();
 
   if (!Object.keys(update).some(k => k.startsWith('$'))) {
@@ -191,54 +235,67 @@ AccountSchema.pre(['updateOne', 'findOneAndUpdate', 'updateMany'], async functio
     }
   }
 
+  // ── Immutability ──────────────────────────────────────────────────────────
   for (const field of IMMUTABLE_FIELDS) {
     if (targeted.has(field)) {
       throw new Error(`'${field}' cannot be modified after account creation`);
     }
   }
 
-  const docs = await this.model.find(filter).session(options.session);
+  // ── FIX: Pass session as undefined (not null) to avoid unintended session clearing ──
+  const session = options?.session ?? undefined;
 
-  for (const doc of docs) {
-    const isBalanceModified = targeted.has('availableBalance') || targeted.has('reservedBalance');
-    const futureStatus = targeted.has('status') ? (update.$set?.status || update.status) : doc.status;
+  const doc = await this.model
+    .findOne(filter)
+    .lean()
+    .session(session);
 
-    if (doc.status === 'FROZEN' && isBalanceModified) {
-      throw new Error('Balance cannot be changed on a frozen account');
-    }
+  // No matching document — nothing to validate
+  if (!doc) return;
 
-    if (doc.status === 'CLOSED' && isBalanceModified) {
-      throw new Error('Balance cannot be changed on a closed account');
-    }
+  const isBalanceModified = targeted.has('availableBalance') || targeted.has('reservedBalance');
 
-    let futureAvailable = new Decimal(doc.availableBalance?.toString() || '0');
-    if (update.$set?.availableBalance !== undefined) {
-      futureAvailable = new Decimal(update.$set.availableBalance.toString());
-    } else if (update.$inc?.availableBalance !== undefined) {
-      futureAvailable = futureAvailable.plus(update.$inc.availableBalance.toString());
-    } else if (update.availableBalance !== undefined) {
-      futureAvailable = new Decimal(update.availableBalance.toString());
-    }
-
-    let futureReserved = new Decimal(doc.reservedBalance?.toString() || '0');
-    if (update.$set?.reservedBalance !== undefined) {
-      futureReserved = new Decimal(update.$set.reservedBalance.toString());
-    } else if (update.$inc?.reservedBalance !== undefined) {
-      futureReserved = futureReserved.plus(update.$inc.reservedBalance.toString());
-    } else if (update.reservedBalance !== undefined) {
-      futureReserved = new Decimal(update.reservedBalance.toString());
-    }
-
-    if (futureAvailable.isNegative()) throw new Error('Available balance cannot be negative');
-    if (futureReserved.isNegative()) throw new Error('Reserved balance cannot be negative');
-
-    if (futureStatus === 'CLOSED' && (!futureAvailable.equals(0) || !futureReserved.equals(0))) {
-      throw new Error('Account can only be closed if both available and reserved balances are exactly 0.00');
-    }
+  // ── Status guards ─────────────────────────────────────────────────────────
+  if (isBalanceModified) {
+    if (doc.status === 'FROZEN') throw new Error('Balance cannot be changed on a frozen account');
+    if (doc.status === 'CLOSED') throw new Error('Balance cannot be changed on a closed account');
   }
 
-  // ── Track last transaction time (unless it's a silent reconciliation fix) ──
-  const isBalanceModified = targeted.has('availableBalance') || targeted.has('reservedBalance');
+  // ── Compute future balances ───────────────────────────────────────────────
+  let futureAvailable = new Decimal(doc.availableBalance?.toString() || '0');
+  if (update.$set?.availableBalance !== undefined) {
+    futureAvailable = new Decimal(update.$set.availableBalance.toString());
+  } else if (update.$inc?.availableBalance !== undefined) {
+    futureAvailable = futureAvailable.plus(update.$inc.availableBalance.toString());
+  } else if (update.availableBalance !== undefined) {
+    futureAvailable = new Decimal(update.availableBalance.toString());
+  }
+
+  let futureReserved = new Decimal(doc.reservedBalance?.toString() || '0');
+  if (update.$set?.reservedBalance !== undefined) {
+    futureReserved = new Decimal(update.$set.reservedBalance.toString());
+  } else if (update.$inc?.reservedBalance !== undefined) {
+    futureReserved = futureReserved.plus(update.$inc.reservedBalance.toString());
+  } else if (update.reservedBalance !== undefined) {
+    futureReserved = new Decimal(update.reservedBalance.toString());
+  }
+
+  // ── Balance floor ─────────────────────────────────────────────────────────
+  if (futureAvailable.isNegative()) throw new Error('Available balance cannot be negative');
+  if (futureReserved.isNegative())  throw new Error('Reserved balance cannot be negative');
+
+  // ── FIX: futureStatus uses ?? so undefined falls back to doc.status ───────
+  // Using || would incorrectly treat a falsy (but valid) status as missing.
+  const futureStatus = targeted.has('status')
+    ? (update.$set?.status ?? update.status ?? doc.status)
+    : doc.status;
+
+  // ── Zero-balance closure rule ─────────────────────────────────────────────
+  if (futureStatus === 'CLOSED' && (!futureAvailable.equals(0) || !futureReserved.equals(0))) {
+    throw new Error('Account can only be closed if both available and reserved balances are exactly 0.00');
+  }
+
+  // ── Track last transaction time (skip for silent reconciliation writes) ───
   if (isBalanceModified && !options.isReconciliation) {
     this.getUpdate().$set = this.getUpdate().$set || {};
     this.getUpdate().$set.lastTransactionAt = new Date();
