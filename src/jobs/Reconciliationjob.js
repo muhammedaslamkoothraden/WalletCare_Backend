@@ -1,7 +1,7 @@
 'use strict';
 
 const { reconcileUser } = require('../services/reconciliation');
-const User = require('../models/User');
+const User = require('../models/user');
 
 // ─── Reconciliation Job ───────────────────────────────────────────────────────
 //

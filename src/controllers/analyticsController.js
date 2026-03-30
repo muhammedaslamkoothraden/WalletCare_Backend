@@ -9,79 +9,128 @@ exports.getAnalyticsDashboard = async (req, res) => {
     const userId = new mongoose.Types.ObjectId(req.user.id);
     const { accountId, timeframe = 'Month' } = req.query;
 
-    // 1. Calculate Start Date
+    // ─── 1. Calculate Start Date ───────────────────────────────────────────────
+
     const now = new Date();
     let startDate = new Date();
+
     switch (timeframe.toLowerCase()) {
-      case 'day': startDate.setHours(0, 0, 0, 0); break;
-      case 'week':
-        startDate = new Date(now.setDate(now.getDate() - now.getDay()));
+      case 'day':
         startDate.setHours(0, 0, 0, 0);
         break;
-      case 'year': startDate = new Date(now.getFullYear(), 0, 1); break;
-      default: startDate = new Date(now.getFullYear(), now.getMonth(), 1); // Month
+      case 'week':
+        startDate = new Date(now);
+        startDate.setDate(now.getDate() - now.getDay());
+        startDate.setHours(0, 0, 0, 0);
+        break;
+      case 'year':
+        startDate = new Date(now.getFullYear(), 0, 1);
+        break;
+      default: // 'month'
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
     }
 
-    // 2. Build Dynamic Match Stage
-    const matchStage = {
+    // ─── 2. Build Base Match Stage ─────────────────────────────────────────────
+
+    const baseMatch = {
       userId,
       status: 'COMPLETED',
       transactedAt: { $gte: startDate },
-      direction: 'STANDARD'
     };
 
-    // Account Filtering Logic: If 'all', don't add accountId to match
     if (accountId && accountId !== 'all') {
-      matchStage.accountId = new mongoose.Types.ObjectId(accountId);
+      baseMatch.accountId = new mongoose.Types.ObjectId(accountId);
     }
 
-    // 3. Run Aggregations
+    // ─── 3. Run Aggregations ───────────────────────────────────────────────────
+
+    // FIX: $sum cannot natively aggregate Decimal128 fields — it silently
+    // returns 0. Wrap $amount in $toDouble before summing so MongoDB can
+    // perform the arithmetic. $toDouble is appropriate here because dashboard
+    // figures are display values; full Decimal128 precision is only needed
+    // on the ledger write path (balance mutations).
+
     const [cashflow, categorySpending, totalTransactions] = await Promise.all([
+
+      // Cashflow: total INCOME and EXPENSE for the period
       Ledger.aggregate([
-        { $match: matchStage },
-        { $group: { _id: '$transactionType', total: { $sum: '$amount' } } }
+        { $match: baseMatch },
+        {
+          $group: {
+            _id: '$transactionType',
+            total: { $sum: { $toDouble: '$amount' } }, // ✅ Fix
+          },
+        },
       ]),
+
+      // Category breakdown: top 5 expense categories
       Ledger.aggregate([
-        { $match: { ...matchStage, transactionType: 'EXPENSE' } },
-        { $group: { _id: '$category', amount: { $sum: '$amount' } } },
+        { $match: { ...baseMatch, transactionType: 'EXPENSE' } },
+        {
+          $group: {
+            _id: '$category',
+            amount: { $sum: { $toDouble: '$amount' } }, // ✅ Fix
+          },
+        },
         { $sort: { amount: -1 } },
-        { $limit: 5 }
+        { $limit: 5 },
       ]),
-      Ledger.countDocuments(matchStage)
+
+      // Total transaction count for the period
+      Ledger.countDocuments(baseMatch),
     ]);
 
-    // 4. Formatting
-    const income = cashflow.find(c => c._id === 'INCOME')?.total || 0;
-    const expense = Math.abs(cashflow.find(c => c._id === 'EXPENSE')?.total || 0);
+    // ─── 4. Format Results ─────────────────────────────────────────────────────
+
+    const incomeObj = cashflow.find((c) => c._id === 'INCOME');
+    const expenseObj = cashflow.find((c) => c._id === 'EXPENSE');
+
+    // Both are plain JS numbers after $toDouble conversion
+    const income = incomeObj ? incomeObj.total : 0;
+    const expense = expenseObj ? expenseObj.total : 0; // Already positive in ledger
+
     const netSavings = income - expense;
-    const spendPercentage = income > 0 ? ((expense / income) * 100).toFixed(1) : 0;
+    const spendPercentage = income > 0 ? (expense / income) * 100 : 0;
+
+    let healthStatus = 'Healthy';
+    if (income === 0 && expense > 0) {
+      healthStatus = 'High';   // Spending recorded with no income
+    } else if (spendPercentage > 70) {
+      healthStatus = 'High';
+    } else if (spendPercentage > 40) {
+      healthStatus = 'Moderate';
+    }
 
     const designColors = ['#ef4444', '#f59e0b', '#8b5cf6', '#3b82f6', '#10b981'];
 
-    res.status(200).json({
+    // ─── 5. Respond ────────────────────────────────────────────────────────────
+
+    return res.status(200).json({
       success: true,
       data: {
         timeRange: timeframe,
         income,
         expense,
         netSavings,
-        savingsRate: income > 0 ? ((netSavings / income) * 100).toFixed(1) : 0,
-        spendPercentage: parseFloat(spendPercentage),
-        healthStatus: spendPercentage <= 40 ? "Healthy" : spendPercentage <= 70 ? "Moderate" : "High",
+        savingsRate: income > 0 ? ((netSavings / income) * 100).toFixed(1) : '0.0',
+        spendPercentage: parseFloat(spendPercentage.toFixed(1)),
+        healthStatus,
         totalTransactions,
         categories: categorySpending.map((c, i) => ({
-          name: c._id,
-          amount: Math.abs(c.amount),
-          percentage: expense > 0 ? ((Math.abs(c.amount) / expense) * 100).toFixed(1) : 0,
-          color: designColors[i] || '#6b7280'
-        }))
-      }
+          name: c._id || 'Uncategorized',
+          amount: c.amount,
+          percentage:
+            expense > 0
+              ? ((c.amount / expense) * 100).toFixed(1)
+              : '0.0',
+          color: designColors[i] || '#6b7280',
+        })),
+      },
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
-
 
 
 // ANALYTICS: GOAL PROGRESS
