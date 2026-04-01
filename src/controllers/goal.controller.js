@@ -422,6 +422,8 @@ exports.shareGoal = async (req, res) => {
 
 // ─── GET GOAL HISTORY ─────────────────────────────────────────────────────────
 
+// ─── GET GOAL HISTORY ─────────────────────────────────────────────────────────
+
 exports.getGoalHistory = async (req, res) => {
     try {
         const goalId = req.params.id;
@@ -442,6 +444,8 @@ exports.getGoalHistory = async (req, res) => {
         const query = {
             userId: req.user.id,
             goalId: goal._id,
+            // Optional: You might also want to exclude VOIDED transactions just like normal history
+            status: { $in: ['COMPLETED', 'PENDING'] } 
         };
 
         if (lastId) {
@@ -456,6 +460,27 @@ exports.getGoalHistory = async (req, res) => {
                 ];
             }
         }
+
+        // ── Exclude reversed pairs ───────────────────────────────────────────
+        const reversals = await Ledger
+            .find({ userId: req.user.id, goalId: goal._id, direction: 'REVERSAL' })
+            .select('_id parentTransactionId')
+            .lean();
+
+        const excludedIds = new Set();
+        for (const r of reversals) {
+            excludedIds.add(r._id.toString());
+            if (r.parentTransactionId) {
+                excludedIds.add(r.parentTransactionId.toString());
+            }
+        }
+
+        if (excludedIds.size > 0) {
+            query._id = {
+                $nin: [...excludedIds].map((id) => new mongoose.Types.ObjectId(id)),
+            };
+        }
+        // ─────────────────────────────────────────────────────────────────────
 
         const history = await Ledger.find(query)
             .sort({ transactedAt: -1, _id: -1 })
@@ -475,6 +500,7 @@ exports.getGoalHistory = async (req, res) => {
                 description: tx.description,
                 createdAt: tx.createdAt,
                 transactedAt: tx.transactedAt,
+                status: tx.status
             })),
         });
     } catch (error) {
