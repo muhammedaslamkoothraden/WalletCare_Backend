@@ -8,5 +8,6 @@ router.get('/history',                        transactionController.getHistory);
 router.post('/process',                       transactionController.processTransaction);
 router.post('/account-transfer',              transactionController.accountTransfer);
 router.patch('/:transactionId/void',          transactionController.voidTransaction);
+router.get('/latest', transactionController.getLatestTransactions);
 
 module.exports = router;

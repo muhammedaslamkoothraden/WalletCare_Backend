@@ -506,3 +506,50 @@ exports.voidTransaction = async (req, res, next) => {
     }
   }
 };
+// ─── 5. getLatestTransactions ──────────────────────────────────────────────────
+
+exports.getLatestTransactions = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+
+    // 1. Exclude reversed pairs so they don't clutter the recent list
+    const reversals = await Ledger.find({ userId, direction: 'REVERSAL' })
+      .select('_id parentTransactionId')
+      .lean();
+
+    const excludedIds = new Set();
+    for (const r of reversals) {
+      excludedIds.add(r._id.toString());
+      if (r.parentTransactionId) excludedIds.add(r.parentTransactionId.toString());
+    }
+
+    const query = { 
+      userId: new mongoose.Types.ObjectId(userId),
+      status: 'COMPLETED' // Hide voided/pending items
+    };
+
+    if (excludedIds.size > 0) {
+      query._id = { $nin: [...excludedIds].map((id) => new mongoose.Types.ObjectId(id)) };
+    }
+
+    // 2. Fetch latest 5 sorted by createdAt
+    const latestTransactions = await Ledger.find(query)
+      .populate('accountId', 'name')
+      .sort({ createdAt: -1 }) // Sorts by newest first based on creation time
+      .limit(5)
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      count: latestTransactions.length,
+      data: latestTransactions.map((tx) => ({
+        ...tx,
+        amount: tx.amount.toString(),
+        accountName: tx.accountId?.name || 'Unknown Account',
+      })),
+    });
+  } catch (error) {
+    console.error('[getLatestTransactions] Error:', error);
+    return res.status(500).json({ success: false, error: 'Failed to fetch latest transactions' });
+  }
+};
