@@ -1,7 +1,7 @@
 const jwt = require("jsonwebtoken");
 const { User } = require("../models/user");
 
-const protect = async (req, res, next) => {
+const adminMiddleware = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
 
@@ -13,7 +13,7 @@ const protect = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
 
-    // Block resetToken — it carries a purpose field, accessToken never does
+    // Block resetToken
     if (decoded.purpose) {
       return res.status(401).json({ success: false, message: "Invalid access token" });
     }
@@ -24,8 +24,9 @@ const protect = async (req, res, next) => {
       return res.status(401).json({ success: false, message: "User no longer exists" });
     }
 
-    if (user.isBanned) {
-      return res.status(403).json({ success: false, message: "Your account has been suspended" });
+    // Admin check — only addition compared to protect middleware
+    if (user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Access denied. Admins only." });
     }
 
     req.user = user;
@@ -40,4 +41,4 @@ const protect = async (req, res, next) => {
   }
 };
 
-module.exports = protect;
+module.exports = adminMiddleware;

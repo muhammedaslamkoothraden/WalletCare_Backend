@@ -12,6 +12,7 @@ const analyticsRoutes = require("./routes/analytics.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const feedbackRoutes = require("./routes/feedback.routes");
 
+const adminRoutes = require("./routes/admin.routes");
 const authMiddleware = require("./middlewares/auth.middleware");
 
 const app = express();
@@ -38,5 +39,8 @@ app.use("/api/goals", authMiddleware, goalRoutes);
 app.use("/api/analytics", authMiddleware, analyticsRoutes);
 app.use("/api/notifications", authMiddleware, notificationRoutes);
 app.use("/api/feedback", authMiddleware, feedbackRoutes);
+
+// Admin routes
+app.use("/api/admin", adminRoutes);
 
 module.exports = app;

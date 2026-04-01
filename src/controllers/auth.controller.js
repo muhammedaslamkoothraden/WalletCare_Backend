@@ -96,6 +96,11 @@ exports.loginUser = async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
 
+    // block banned users after password check
+    if (user.isBanned) {
+      return res.status(403).json({ message: "Your account has been suspended" });
+    }
+
     // auto recover — if account was scheduled for deletion, cancel it silently
     if (user.scheduledDeletionAt) {
       await User.findByIdAndUpdate(user._id, { scheduledDeletionAt: null });
@@ -125,7 +130,6 @@ exports.loginUser = async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 };
-
 // Forgot Password — sends OTP to email, generic response to prevent email enumeration
 exports.forgotPassword = async (req, res) => {
   try {

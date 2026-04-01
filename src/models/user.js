@@ -13,6 +13,7 @@ const userSchema = new mongoose.Schema(
     refreshToken: { type: String, default: null },
     scheduledDeletionAt: { type: Date, default: null },
     rating: { type: Number, min: 1, max: 5, default: null },
+    isBanned: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
