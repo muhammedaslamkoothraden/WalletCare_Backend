@@ -12,16 +12,11 @@ const VALID_TRANSITIONS = {
   VOIDED:    [],
 };
 
-// FIX: Renamed from TRANSFER_DIRECTIONS — now covers all directions that
-// require linkedAccountId, not just transfer legs.
 const DIRECTIONS_REQUIRING_LINKED_ACCOUNT = new Set([
   'ACCOUNT_TRANSFER_IN',
   'ACCOUNT_TRANSFER_OUT',
 ]);
 
-// FIX: Added transferGroupId — it is structural metadata set at creation
-// and must never change. Changing it would break the half-write detection
-// logic in the transfer service idempotency recovery path.
 const IMMUTABLE_FIELDS = new Set([
   'amount',
   'userId',
@@ -30,17 +25,13 @@ const IMMUTABLE_FIELDS = new Set([
   'direction',
   'parentTransactionId',
   'category',
-  'replacesTransactionId',
   'transactedAt',
   'transferGroupId',
 ]);
 
-// ─── Valid Categories ─────────────────────────────────────────────────────────
-// FIX: Locked down as an explicit enum to prevent silent analytics breakage.
-// Free-text category caused 'Food' and 'food' to produce separate $group
-// buckets in aggregation. The set() normalizer alone was not sufficient —
-// 'XYZ' would still be stored as a valid category.
-// Add new values here as product requirements evolve.
+// Strict enum — prevents 'Food' and 'food' from creating separate $group
+// buckets in aggregation. The set() normaliser handles case, enum handles
+// validity. To add a new category update this array only.
 const VALID_CATEGORIES = [
   'Food',
   'Transport',
@@ -61,6 +52,7 @@ const VALID_CATEGORIES = [
 
 const LedgerSchema = new mongoose.Schema(
   {
+    // ── Ownership ─────────────────────────────────────────────────────────────
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -79,9 +71,11 @@ const LedgerSchema = new mongoose.Schema(
       index: true,
     },
 
+    // ── Financials ────────────────────────────────────────────────────────────
+
     // ⚠️ AGGREGATION NOTE:
-    // The getter (v.toString()) applies when reading via JS (doc.amount).
-    // It does NOT fire inside MongoDB aggregation pipelines.
+    // Getters (v.toString()) apply when reading via JS (doc.amount).
+    // They do NOT fire inside MongoDB aggregation pipelines.
     // Always wrap in aggregation: { $toDouble: '$amount' }
     amount: {
       type: mongoose.Schema.Types.Decimal128,
@@ -100,20 +94,16 @@ const LedgerSchema = new mongoose.Schema(
     },
 
     // Balance snapshot at the moment this entry was written.
-    // Set by the transaction controller after computing the new account balance.
     // Enables balance-over-time charts without re-summing all ledger entries.
-    // ⚠️ Same aggregation note as amount — use { $toDouble: '$runningBalance' }
-    //
-    // FIX: Added non-negative validator. A negative running balance indicates
-    // a controller bug (Account schema guards against negative balances).
-    // Catching it here provides an additional safety net.
+    // ⚠️ Same aggregation note — use { $toDouble: '$runningBalance' }
+    // A negative value here means a controller bug — guard below catches it.
     runningBalance: {
       type: mongoose.Schema.Types.Decimal128,
       default: null,
       get: (v) => (v ? v.toString() : null),
       validate: {
         validator: function (v) {
-          if (v === null || v === undefined) return true; // null is allowed (unset)
+          if (v === null || v === undefined) return true;
           try {
             return new Decimal(v.toString()).greaterThanOrEqualTo('0');
           } catch {
@@ -124,12 +114,23 @@ const LedgerSchema = new mongoose.Schema(
       },
     },
 
+    // ── Classification ────────────────────────────────────────────────────────
+
     transactionType: {
       type: String,
       enum: ['INCOME', 'EXPENSE', 'TRANSFER', 'REVERSAL'],
       required: true,
     },
 
+    // Valid direction + transactionType combinations:
+    //
+    //  STANDARD             → INCOME | EXPENSE
+    //  GOAL_ALLOCATION      → EXPENSE
+    //  GOAL_DEALLOCATION    → INCOME
+    //  GOAL_COMPLETION      → EXPENSE
+    //  ACCOUNT_TRANSFER_OUT → TRANSFER
+    //  ACCOUNT_TRANSFER_IN  → TRANSFER
+    //  REVERSAL             → REVERSAL
     direction: {
       type: String,
       enum: [
@@ -140,28 +141,43 @@ const LedgerSchema = new mongoose.Schema(
         'ACCOUNT_TRANSFER_IN',
         'ACCOUNT_TRANSFER_OUT',
         'REVERSAL',
-        'EDIT_REPLACEMENT',
       ],
       required: true,
       default: 'STANDARD',
     },
 
+    // ── Linkage ───────────────────────────────────────────────────────────────
+
+    // Required when direction is ACCOUNT_TRANSFER_IN or ACCOUNT_TRANSFER_OUT.
     linkedAccountId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Account',
       default: null,
     },
 
-    // Groups the OUT and IN ledger entries of a single transfer.
-    // Used to detect and surface half-written transfers during
-    // idempotency recovery. Set to the same ObjectId on both legs.
-    // Immutable after creation — see IMMUTABLE_FIELDS above.
+    // Groups the OUT and IN ledger entries of a single account transfer.
+    // Same ObjectId is set on both legs at creation time.
+    // Used to detect half-written transfers during idempotency recovery.
+    // Immutable after creation — see IMMUTABLE_FIELDS.
     transferGroupId: {
       type: mongoose.Schema.Types.ObjectId,
       default: null,
       index: true,
     },
 
+    // Links a REVERSAL entry back to the original entry it cancels.
+    // Required when transactionType === 'REVERSAL'.
+    // Immutable after creation — see IMMUTABLE_FIELDS.
+    parentTransactionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Ledger',
+      default: null,
+    },
+
+    // ── Idempotency ───────────────────────────────────────────────────────────
+
+    // Unique per (userId, idempotencyKey) — see index below.
+    // Recommended format: '<action>-<uuid>' e.g. 'reversal-abc123xyz'
     idempotencyKey: {
       type: String,
       required: true,
@@ -170,16 +186,7 @@ const LedgerSchema = new mongoose.Schema(
       maxlength: [128, 'idempotencyKey cannot exceed 128 characters'],
     },
 
-    parentTransactionId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Ledger',
-      default: null,
-    },
-    replacesTransactionId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Ledger',
-      default: null,
-    },
+    // ── Metadata ──────────────────────────────────────────────────────────────
 
     partyName: {
       type: String,
@@ -187,22 +194,20 @@ const LedgerSchema = new mongoose.Schema(
       maxlength: [100, 'partyName cannot exceed 100 characters'],
     },
 
-    // FIX: Now enforced as both a normalizing setter AND a strict enum.
-    // The setter alone was insufficient — any arbitrary string like 'XYZ'
-    // would pass through normalized but still be stored as an invalid category,
-    // causing silent analytics breakage in $group aggregations.
-    // To add a new category, update both VALID_CATEGORIES and this enum.
+    // set() normalises to Title Case first so 'food' → 'Food' before
+    // enum validation fires. This means 'food' passes, 'xyz' is rejected.
     category: {
       type: String,
       required: true,
       trim: true,
       enum: {
         values: VALID_CATEGORIES,
-        message: 'Category \'{VALUE}\' is not valid. Must be one of: ' + VALID_CATEGORIES.join(', '),
+        message:
+          "Category '{VALUE}' is not valid. Must be one of: " +
+          VALID_CATEGORIES.join(', '),
       },
       set: (v) => {
         if (!v) return v;
-        // Normalise to Title Case before enum validation fires.
         return v.charAt(0).toUpperCase() + v.slice(1).toLowerCase();
       },
     },
@@ -213,6 +218,9 @@ const LedgerSchema = new mongoose.Schema(
       maxlength: [255, 'description cannot exceed 255 characters'],
     },
 
+    // User-controlled date — separate from createdAt (system timestamp).
+    // Allows backdating e.g. logging a cash expense from yesterday.
+    // Immutable after creation — see IMMUTABLE_FIELDS.
     transactedAt: {
       type: Date,
       required: true,
@@ -227,10 +235,10 @@ const LedgerSchema = new mongoose.Schema(
     },
   },
   {
-    timestamps: true,
+    timestamps: true,          // adds createdAt, updatedAt automatically
     toJSON:   { getters: true },
     toObject: { getters: true },
-    optimisticConcurrency: true,
+    optimisticConcurrency: true, // prevents lost-update race on concurrent saves
   }
 );
 
@@ -238,12 +246,10 @@ const LedgerSchema = new mongoose.Schema(
 
 LedgerSchema.index({ accountId: 1, status: 1 });
 
-// Unique per (userId, idempotencyKey) — excludes FAILED entries so that a
-// failed attempt can be retried with the same key.
-// NOTE: two concurrent retries of a failed key can race past the controller's
-// idempotency check simultaneously. One will win the insert; the other gets
-// a 11000 duplicate key error. The transfer service catch block handles this
-// correctly via the error.code === 11000 path.
+// Unique per (userId, idempotencyKey) — excludes FAILED so a failed attempt
+// can be retried with the same key. Concurrent retries of a failed key race
+// to the DB; one wins the insert, the other gets a 11000 duplicate key error
+// which the controller handles via the error.code === 11000 path.
 LedgerSchema.index(
   { userId: 1, idempotencyKey: 1 },
   { unique: true, partialFilterExpression: { status: { $ne: 'FAILED' } } }
@@ -252,20 +258,15 @@ LedgerSchema.index(
 LedgerSchema.index({ accountId: 1, createdAt: -1 });
 LedgerSchema.index({ userId: 1, _id: -1 });
 
-// FIX: Added compound index on (userId, transactedAt) to support date-range
-// filtering in getHistory and analytics dashboard queries.
-// Without this, queries filtering by userId + transactedAt range fall back
-// to a collection scan on transactedAt for a given user — unacceptable at scale.
+// Supports date-range filtering in getHistory and analytics dashboard queries.
 LedgerSchema.index({ userId: 1, transactedAt: -1 });
 
-// Sparse index for reversal lookups by parent.
+// Sparse — only populated on REVERSAL entries.
 LedgerSchema.index({ parentTransactionId: 1 }, { sparse: true });
 
-// DB-level guard: only one REVERSAL allowed per parent transaction.
-// Prevents two concurrent requests with different idempotency keys from
-// both reversing the same parent. The controller's alreadyReversed check
-// is kept as an early exit for a better error message, but this index
-// is the hard guarantee.
+// DB-level hard guarantee: only one REVERSAL allowed per parent transaction.
+// The controller's alreadyReversed check is an early exit for a better error
+// message — this index is the true enforcement layer.
 LedgerSchema.index(
   { parentTransactionId: 1, direction: 1 },
   {
@@ -276,19 +277,6 @@ LedgerSchema.index(
   }
 );
 
-// FIX: Removed the redundant { replacesTransactionId: 1, sparse: true } index
-// that existed before this composite index. It was a subset of this index
-// and created unnecessary write overhead on every ledger insert.
-LedgerSchema.index(
-  { replacesTransactionId: 1, direction: 1 },
-  {
-    unique: true,
-    sparse: true,
-    partialFilterExpression: { direction: 'EDIT_REPLACEMENT' },
-    name: 'one_edit_per_original',
-  }
-);
-
 // ─── Pre-save middleware ──────────────────────────────────────────────────────
 
 LedgerSchema.pre('save', async function () {
@@ -296,9 +284,6 @@ LedgerSchema.pre('save', async function () {
   // ── New entry validation ───────────────────────────────────────────────────
   if (this.isNew) {
 
-    // FIX: Uses DIRECTIONS_REQUIRING_LINKED_ACCOUNT (renamed from TRANSFER_DIRECTIONS)
-    // to be explicit that this check is about linkedAccountId presence,
-    // not just about whether the direction is a transfer leg.
     if (DIRECTIONS_REQUIRING_LINKED_ACCOUNT.has(this.direction) && !this.linkedAccountId) {
       throw new Error(`direction '${this.direction}' requires linkedAccountId`);
     }
@@ -314,15 +299,6 @@ LedgerSchema.pre('save', async function () {
       throw new Error('REVERSAL transactions must reference a parentTransactionId');
     }
 
-    if (this.direction === 'EDIT_REPLACEMENT' && !this.replacesTransactionId) {
-      throw new Error('EDIT_REPLACEMENT transactions must reference a replacesTransactionId');
-    }
-
-    // NOTE: The EDIT_REPLACEMENT + replacesTransactionId validation above only
-    // runs for new entries (pre-save on isNew). This is intentional — ledger
-    // entries are immutable after creation, so an EDIT_REPLACEMENT can never
-    // lose its replacesTransactionId post-creation. The gap is by design.
-
     return;
   }
 
@@ -335,10 +311,6 @@ LedgerSchema.pre('save', async function () {
 
   // ── Status transition ──────────────────────────────────────────────────────
   if (this.isModified('status')) {
-    // FIX: this.$session() can return null on a document not enrolled in a
-    // session. Passing null explicitly to .session() in Mongoose clears the
-    // session (different from undefined which is a no-op). Use ?? undefined
-    // to ensure we never pass null.
     const session = this.$session() ?? undefined;
 
     const previous = await mongoose
@@ -353,7 +325,9 @@ LedgerSchema.pre('save', async function () {
 
     const allowed = VALID_TRANSITIONS[previous.status] ?? [];
     if (!allowed.includes(this.status)) {
-      throw new Error(`Invalid status transition: ${previous.status} → ${this.status}`);
+      throw new Error(
+        `Invalid status transition: ${previous.status} → ${this.status}`
+      );
     }
 
     return;
@@ -373,13 +347,13 @@ LedgerSchema.pre(['updateOne', 'findOneAndUpdate', 'updateMany'], async function
   const update = this.getUpdate();
   const filter = this.getFilter();
 
-  // Block full document replacement — ledger entries must only be patched
-  // via $ operators to preserve immutability guarantees.
+  // Block full document replacement — entries must only be patched via
+  // $ operators to preserve immutability guarantees.
   if (!Object.keys(update).some((k) => k.startsWith('$'))) {
     throw new Error('Document replacement is not permitted on ledger entries');
   }
 
-  // Collect all fields targeted by this update
+  // Collect all fields targeted by this update.
   const targeted = new Set();
   for (const [op, payload] of Object.entries(update)) {
     if (op.startsWith('$') && payload && typeof payload === 'object') {
@@ -389,22 +363,15 @@ LedgerSchema.pre(['updateOne', 'findOneAndUpdate', 'updateMany'], async function
     }
   }
 
-  // Immutability guard
+  // Immutability guard.
   for (const field of IMMUTABLE_FIELDS) {
     if (targeted.has(field)) {
       throw new Error(`'${field}' cannot be modified after creation`);
     }
   }
 
-  // Status transition guard
+  // Status transition guard.
   if (update.$set?.status) {
-    // FIX: Replaced model.find(filter) with findOne + lean() — same N+1
-    // problem as Account.js. A broad filter could load many documents just
-    // to validate one status transition.
-    //
-    // FIX: session is passed as `?? undefined` — passing null explicitly to
-    // .session() in some Mongoose versions clears the session rather than
-    // being a no-op.
     const session = this.getOptions()?.session ?? undefined;
 
     const doc = await this.model

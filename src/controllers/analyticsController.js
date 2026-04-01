@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const Ledger = require('../models/Ledger');
+const Ledger = require('../models/ledger');
 const Account = require('../models/Account');
 const Goal = require('../models/Goal');
 
@@ -7,94 +7,98 @@ const Goal = require('../models/Goal');
 exports.getAnalyticsDashboard = async (req, res) => {
   try {
     const userId = new mongoose.Types.ObjectId(req.user.id);
-    const { accountId, timeframe = 'Month' } = req.query;
-
-    // ─── 1. Calculate Start Date ───────────────────────────────────────────────
+    
+    // 1. Extract new month and year parameters
+    const { accountId, timeframe = 'Month', month, year } = req.query;
 
     const now = new Date();
-    let startDate = new Date();
+    let startDate;
+    let endDate; 
 
-    switch (timeframe.toLowerCase()) {
-      case 'day':
-        startDate.setHours(0, 0, 0, 0);
-        break;
-      case 'week':
-        startDate = new Date(now);
-        startDate.setDate(now.getDate() - now.getDay());
-        startDate.setHours(0, 0, 0, 0);
-        break;
-      case 'year':
-        startDate = new Date(now.getFullYear(), 0, 1);
-        break;
-      default: // 'month'
-        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    // ─── 1. Improved Date Calculation with Explicit End Dates ───────────
+    if (month && year) {
+      // If client requests a SPECIFIC month (e.g., month=3, year=2024)
+      const m = parseInt(month, 10) - 1; // JavaScript months are 0-indexed (0 = Jan)
+      const y = parseInt(year, 10);
+      
+      startDate = new Date(y, m, 1, 0, 0, 0, 0);
+      endDate = new Date(y, m + 1, 1, 0, 0, 0, 0); // Exact start of the next month
+    } else {
+      // Fallback to relative timeframes (Current Day, Week, Month, Year)
+      switch (timeframe.toLowerCase()) {
+        case 'day':
+          startDate = new Date();
+          startDate.setHours(0, 0, 0, 0);
+          endDate = new Date(startDate);
+          endDate.setDate(endDate.getDate() + 1);
+          break;
+        case 'week':
+          startDate = new Date();
+          startDate.setDate(now.getDate() - now.getDay());
+          startDate.setHours(0, 0, 0, 0);
+          endDate = new Date(startDate);
+          endDate.setDate(endDate.getDate() + 7);
+          break;
+        case 'year':
+          startDate = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0);
+          endDate = new Date(now.getFullYear() + 1, 0, 1, 0, 0, 0, 0);
+          break;
+        default: // 'month' (Current month)
+          startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+          endDate = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
+      }
     }
 
-    // ─── 2. Build Base Match Stage ─────────────────────────────────────────────
-
+    // ─── 2. Build Base Match Stage (Now with a strict window) ───────────
     const baseMatch = {
       userId,
       status: 'COMPLETED',
-      transactedAt: { $gte: startDate },
+      transactedAt: { 
+        $gte: startDate, 
+        $lt: endDate // 🔥 Prevents bleeding into the next month
+      },
     };
 
     if (accountId && accountId !== 'all') {
       baseMatch.accountId = new mongoose.Types.ObjectId(accountId);
     }
 
-    // ─── 3. Run Aggregations ───────────────────────────────────────────────────
-
-    // FIX: $sum cannot natively aggregate Decimal128 fields — it silently
-    // returns 0. Wrap $amount in $toDouble before summing so MongoDB can
-    // perform the arithmetic. $toDouble is appropriate here because dashboard
-    // figures are display values; full Decimal128 precision is only needed
-    // on the ledger write path (balance mutations).
-
+    // ─── 3. Run Aggregations ─────────────────────────────────────────────
+    // NOTE: Using $convert is safer than $toDouble in case amount is null/missing
     const [cashflow, categorySpending, totalTransactions] = await Promise.all([
-
-      // Cashflow: total INCOME and EXPENSE for the period
       Ledger.aggregate([
         { $match: baseMatch },
         {
           $group: {
             _id: '$transactionType',
-            total: { $sum: { $toDouble: '$amount' } }, // ✅ Fix
+            total: { $sum: { $convert: { input: '$amount', to: 'double', onError: 0 } } },
           },
         },
       ]),
-
-      // Category breakdown: top 5 expense categories
       Ledger.aggregate([
         { $match: { ...baseMatch, transactionType: 'EXPENSE' } },
         {
           $group: {
             _id: '$category',
-            amount: { $sum: { $toDouble: '$amount' } }, // ✅ Fix
+            amount: { $sum: { $convert: { input: '$amount', to: 'double', onError: 0 } } },
           },
         },
         { $sort: { amount: -1 } },
         { $limit: 5 },
       ]),
-
-      // Total transaction count for the period
       Ledger.countDocuments(baseMatch),
     ]);
 
-    // ─── 4. Format Results ─────────────────────────────────────────────────────
-
-    const incomeObj = cashflow.find((c) => c._id === 'INCOME');
-    const expenseObj = cashflow.find((c) => c._id === 'EXPENSE');
-
-    // Both are plain JS numbers after $toDouble conversion
-    const income = incomeObj ? incomeObj.total : 0;
-    const expense = expenseObj ? expenseObj.total : 0; // Already positive in ledger
+    // ─── 4. Format Results ───────────────────────────────────────────────
+    const income = cashflow.find((c) => c._id === 'INCOME')?.total || 0;
+    const expense = cashflow.find((c) => c._id === 'EXPENSE')?.total || 0;
 
     const netSavings = income - expense;
     const spendPercentage = income > 0 ? (expense / income) * 100 : 0;
 
     let healthStatus = 'Healthy';
     if (income === 0 && expense > 0) {
-      healthStatus = 'High';   // Spending recorded with no income
+      healthStatus = 'High';
     } else if (spendPercentage > 70) {
       healthStatus = 'High';
     } else if (spendPercentage > 40) {
@@ -103,12 +107,10 @@ exports.getAnalyticsDashboard = async (req, res) => {
 
     const designColors = ['#ef4444', '#f59e0b', '#8b5cf6', '#3b82f6', '#10b981'];
 
-    // ─── 5. Respond ────────────────────────────────────────────────────────────
-
     return res.status(200).json({
       success: true,
       data: {
-        timeRange: timeframe,
+        timeRange: month && year ? `${month}/${year}` : timeframe,
         income,
         expense,
         netSavings,
@@ -119,16 +121,43 @@ exports.getAnalyticsDashboard = async (req, res) => {
         categories: categorySpending.map((c, i) => ({
           name: c._id || 'Uncategorized',
           amount: c.amount,
-          percentage:
-            expense > 0
-              ? ((c.amount / expense) * 100).toFixed(1)
-              : '0.0',
+          percentage: expense > 0 ? ((c.amount / expense) * 100).toFixed(1) : '0.0',
           color: designColors[i] || '#6b7280',
         })),
       },
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
+  }
+};
+// Example of the ObjectId Fix for your Goal Analytics:
+exports.getGoalProgressAnalytics = async (req, res) => {
+  try {
+    const userId = new mongoose.Types.ObjectId(req.user.id); // ALWAYS CAST THIS
+    const analytics = await Goal.aggregate([
+      { $match: { userId: userId } }, // Uses the casted ID
+      {
+        $group: {
+          _id: null,
+          totalGoals: { $sum: 1 },
+          completedGoals: { $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] } },
+          activeGoals: { $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] } },
+          overdueGoals: { $sum: { $cond: [{ $eq: ["$status", "overdue"] }, 1, 0] } },
+          averageProgress: {
+            $avg: {
+              $multiply: [
+                { $divide: ["$currentAmount", "$targetAmount"] },
+                100
+              ]
+            }
+          }
+        }
+      }
+    ]);
+
+    res.status(200).json({ success: true, data: analytics[0] || {} });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
