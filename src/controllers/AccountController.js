@@ -203,3 +203,69 @@ exports.setAccountAsDefault = async (req, res) => {
     session.endSession();
   }
 };
+// ─── deleteAccount (Soft Delete) ──────────────────────────────────────────────
+
+exports.deleteAccount = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const userId = req.user.id;
+    const { accountId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(accountId)) {
+      await session.abortTransaction();
+      return errRes(res, 400, 'Invalid accountId');
+    }
+
+    // 1. Find the account
+    const account = await Account.findOne(
+      { _id: accountId, userId, status: { $ne: 'CLOSED' } }
+    ).session(session);
+
+    if (!account) {
+      await session.abortTransaction();
+      return errRes(res, 404, 'Account not found or already closed');
+    }
+
+    // 2. Prevent deletion if the account has funds
+    const available = new Decimal(account.availableBalance?.toString() || '0');
+    const reserved = new Decimal(account.reservedBalance?.toString() || '0');
+
+    if (available.greaterThan(0) || reserved.greaterThan(0)) {
+      await session.abortTransaction();
+      return errRes(res, 400, 'Cannot close an account with a non-zero balance. Please transfer or withdraw your funds first.');
+    }
+
+    // 3. Mark the account as closed
+    const wasDefault = account.isDefault;
+    account.status = 'CLOSED';
+    account.isDefault = false; 
+    await account.save({ session });
+
+    // 4. Handle Default Account reassignment
+    if (wasDefault) {
+      const nextActiveAccount = await Account.findOne(
+        { userId, status: { $ne: 'CLOSED' } }
+      ).session(session);
+
+      if (nextActiveAccount) {
+        nextActiveAccount.isDefault = true;
+        await nextActiveAccount.save({ session });
+      }
+    }
+
+    await session.commitTransaction();
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Account successfully closed' 
+    });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error(error);
+    return errRes(res, 500, 'Failed to close account');
+  } finally {
+    session.endSession();
+  }
+};

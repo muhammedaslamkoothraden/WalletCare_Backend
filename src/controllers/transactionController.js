@@ -2,7 +2,7 @@
 
 const mongoose = require('mongoose');
 const Decimal = require('decimal.js');
-const Ledger = require('../models/Ledger'); // Adjusted to standard capitalization
+const Ledger = require('../models/ledger'); // Adjusted to standard capitalization
 const Account = require('../models/Account');
 const Goal = require('../models/Goal'); // 🔥 ADDED: Import Goal model
 const { assertString, StringValidationError } = require('../helpers/sanitize');
