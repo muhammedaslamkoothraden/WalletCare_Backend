@@ -10,6 +10,7 @@ router.use(adminMiddleware);
 router.get("/stats", adminController.getStats);
 
 // Users
+router.get("/users/scheduled-deletion", adminController.getScheduledDeletionUsers);
 router.get("/users", adminController.getAllUsers);
 router.get("/users/:id", adminController.getUserById);
 router.patch("/users/:id/ban", adminController.banUser);
@@ -18,6 +19,12 @@ router.post("/users/:id/logout", adminController.logoutUser);
 router.patch("/users/:id/restore", adminController.restoreUser);
 
 // Analytics
-router.get("/analytics", adminController.getAnalytics);
+router.get("/analytics/users", adminController.getUserAnalytics);
+router.get("/analytics/feedback", adminController.getFeedbackAnalytics);
+
+// Feedback
+router.get("/feedback", adminController.getAllFeedback);
+router.get("/feedback/:id", adminController.getFeedbackById);
+router.delete("/feedback/:id", adminController.deleteFeedback);
 
 module.exports = router;
