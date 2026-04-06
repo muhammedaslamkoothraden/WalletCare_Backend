@@ -21,6 +21,9 @@ router.patch("/users/:id/restore", adminController.restoreUser);
 // Analytics
 router.get("/analytics/users", adminController.getUserAnalytics);
 router.get("/analytics/feedback", adminController.getFeedbackAnalytics);
+router.get("/analytics/transactions", adminController.getTransactionAnalytics);
+router.get("/analytics/goals", adminController.getGoalAnalytics);
+router.get("/analytics/accounts", adminController.getAccountAnalytics);
 
 // Feedback
 router.get("/feedback", adminController.getAllFeedback);
