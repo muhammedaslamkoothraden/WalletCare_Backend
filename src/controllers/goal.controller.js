@@ -72,7 +72,6 @@ exports.getGoals = async (req, res) => {
 };
 
 // ─── GET GOAL BY ID ───────────────────────────────────────────────────────────
-
 exports.getGoalById = async (req, res) => {
     try {
         const { id } = req.params;
@@ -90,6 +89,7 @@ exports.getGoalById = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
 
 // ─── UPDATE GOAL ──────────────────────────────────────────────────────────────
 
@@ -258,6 +258,9 @@ exports.depositToGoal = async (req, res) => {
             snapshotAvailable: snap.snapshotAvailable,
             snapshotReserved:  snap.snapshotReserved,
         }], { session });
+
+
+        //goal completion check
 
         if (goal.currentAmount >= goal.targetAmount) {
             goal.status = 'completed';
