@@ -18,6 +18,9 @@ router.patch("/users/:id/unban", adminController.unbanUser);
 router.post("/users/:id/logout", adminController.logoutUser);
 router.patch("/users/:id/restore", adminController.restoreUser);
 
+// User overview
+router.get("/users/:id/overview", adminController.getUserOverview);
+
 // Analytics
 router.get("/analytics/users", adminController.getUserAnalytics);
 router.get("/analytics/feedback", adminController.getFeedbackAnalytics);

@@ -619,6 +619,138 @@ const getAccountAnalytics = async (req, res) => {
   }
 };
 
+// GET /api/admin/users/:id/overview
+const getUserOverview = async (req, res) => {
+  try {
+    const Account = require("../models/Account");
+    const Goal    = require("../models/goal");
+    const Ledger  = require("../models/Ledger");
+    const userId  = req.params.id;
+    const { User } = require("../models/user");
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const mongoose = require("mongoose");
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+
+    // ── Accounts ──────────────────────────────────────────────────────────
+    const accountStats = await Account.aggregate([
+      { $match: { userId: userObjectId } },
+      {
+        $group: {
+          _id: null,
+          total:        { $sum: 1 },
+          active:       { $sum: { $cond: [{ $eq: ["$status", "ACTIVE"]  }, 1, 0] } },
+          frozen:       { $sum: { $cond: [{ $eq: ["$status", "FROZEN"]  }, 1, 0] } },
+          closed:       { $sum: { $cond: [{ $eq: ["$status", "CLOSED"]  }, 1, 0] } },
+          cashAccounts: { $sum: { $cond: [{ $eq: ["$type",   "CASH"]    }, 1, 0] } },
+          bankAccounts: { $sum: { $cond: [{ $eq: ["$type",   "BANK"]    }, 1, 0] } },
+          totalBalance: { $sum: { $toDouble: "$availableBalance" } },
+        },
+      },
+    ]);
+
+    // ── Goals ─────────────────────────────────────────────────────────────
+    const goalStats = await Goal.aggregate([
+      { $match: { userId: userObjectId } },
+      {
+        $group: {
+          _id: null,
+          total:              { $sum: 1 },
+          active:             { $sum: { $cond: [{ $eq: ["$status", "active"]    }, 1, 0] } },
+          completed:          { $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] } },
+          overdue:            { $sum: { $cond: [{ $eq: ["$status", "overdue"]   }, 1, 0] } },
+          totalTargetAmount:  { $sum: "$targetAmount"  },
+          totalCurrentAmount: { $sum: "$currentAmount" },
+        },
+      },
+    ]);
+
+    // ── Transactions ──────────────────────────────────────────────────────
+    const txStats = await Ledger.aggregate([
+      {
+        $match: {
+          userId: userObjectId,
+          status: "COMPLETED",
+          direction: "STANDARD",
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          total:        { $sum: 1 },
+          totalIncome:  { $sum: { $cond: [{ $eq: ["$transactionType", "INCOME"]  }, { $toDouble: "$amount" }, 0] } },
+          totalExpense: { $sum: { $cond: [{ $eq: ["$transactionType", "EXPENSE"] }, { $toDouble: "$amount" }, 0] } },
+        },
+      },
+    ]);
+
+    // Top spending category for this user
+    const topCategory = await Ledger.aggregate([
+      {
+        $match: {
+          userId: userObjectId,
+          status: "COMPLETED",
+          transactionType: "EXPENSE",
+          direction: "STANDARD",
+        },
+      },
+      {
+        $group: {
+          _id: "$category",
+          total: { $sum: { $toDouble: "$amount" } },
+        },
+      },
+      { $sort: { total: -1 } },
+      { $limit: 1 },
+    ]);
+
+    const accounts     = accountStats[0] || { total: 0, active: 0, frozen: 0, closed: 0, cashAccounts: 0, bankAccounts: 0, totalBalance: 0 };
+    const goals        = goalStats[0]    || { total: 0, active: 0, completed: 0, overdue: 0, totalTargetAmount: 0, totalCurrentAmount: 0 };
+    const transactions = txStats[0]      || { total: 0, totalIncome: 0, totalExpense: 0 };
+
+    const avgCompletionRate = goals.total > 0
+      ? parseFloat(((goals.totalCurrentAmount / goals.totalTargetAmount) * 100 || 0).toFixed(1))
+      : 0;
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        accounts: {
+          total:        accounts.total,
+          active:       accounts.active,
+          frozen:       accounts.frozen,
+          closed:       accounts.closed,
+          cashAccounts: accounts.cashAccounts,
+          bankAccounts: accounts.bankAccounts,
+          totalBalance: parseFloat(accounts.totalBalance.toFixed(2)),
+        },
+        goals: {
+          total:              goals.total,
+          active:             goals.active,
+          completed:          goals.completed,
+          overdue:            goals.overdue,
+          totalTargetAmount:  parseFloat(goals.totalTargetAmount.toFixed(2)),
+          totalCurrentAmount: parseFloat(goals.totalCurrentAmount.toFixed(2)),
+          avgCompletionRate,
+        },
+        transactions: {
+          total:        transactions.total,
+          totalIncome:  parseFloat(transactions.totalIncome.toFixed(2)),
+          totalExpense: parseFloat(transactions.totalExpense.toFixed(2)),
+          topCategory:  topCategory[0]?._id || "—",
+        },
+      },
+    });
+  } catch (error) {
+    console.error("getUserOverview error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
 module.exports = {
   getStats,
   getAllUsers,
@@ -636,4 +768,5 @@ module.exports = {
   getTransactionAnalytics,
   getGoalAnalytics,
   getAccountAnalytics,
+  getUserOverview,
 };
