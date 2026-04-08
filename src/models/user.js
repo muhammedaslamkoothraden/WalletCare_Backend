@@ -11,6 +11,7 @@ const userSchema = new mongoose.Schema(
     role: { type: String, enum: ["user", "admin"], default: "user" },
     isEmailVerified: { type: Boolean, default: false },
     refreshToken: { type: String, default: null },
+    fcmToken: { type: String, default: null },
     scheduledDeletionAt: { type: Date, default: null },
     rating: { type: Number, min: 1, max: 5, default: null },
   },

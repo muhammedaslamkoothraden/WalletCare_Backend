@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Decimal = require('decimal.js');
-const Ledger = require('../models/Ledger');
+const Ledger = require('../models/ledger');
 const Account = require('../models/Account');
 
 // ─── Custom Error Class ───────────────────────────────────────────────────────

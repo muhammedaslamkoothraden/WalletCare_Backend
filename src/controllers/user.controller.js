@@ -75,6 +75,21 @@ exports.updateProfile = async (req, res) => {
   }
 };
 
+// Update FCM Token
+exports.updateFcmToken = async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+
+    // allow null or string
+    await User.findByIdAndUpdate(req.user._id, { fcmToken });
+    return res.status(200).json({ message: "FCM token updated safely" });
+  } catch (error) {
+    console.error("updateFcmToken error:", error.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+
 // Change Password — user knows current password, stays logged in with new tokens
 exports.changePassword = async (req, res) => {
   try {
@@ -209,7 +224,8 @@ exports.deleteAccount = async (req, res) => {
       scheduledDeletionAt,
     });
 
-  } catch (error) {;
+  } catch (error) {
+    ;
     console.error("deleteAccount error:", error.message);
     return res.status(500).json({ message: "Server error" });
   }

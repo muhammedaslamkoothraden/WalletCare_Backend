@@ -2,41 +2,64 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 
+// Route Imports
 const authRoutes = require("./routes/auth.routes");
 const otpRoutes = require("./routes/otp.routes");
 const userRoutes = require("./routes/user.routes");
-const AccountRoutes = require("./routes/Account.routes");
+const accountRoutes = require("./routes/Account.routes");
 const transactionRoutes = require("./routes/transaction.routes");
 const goalRoutes = require("./routes/goal.routes");
 const analyticsRoutes = require("./routes/analytics.routes");
-const notificationRoutes = require("./routes/notification.routes");
 const feedbackRoutes = require("./routes/feedback.routes");
+const notificationRoutes = require("./routes/notification.routes");
+const testRoutes = require("./routes/test.routes");
 
+// Middleware Imports
 const authMiddleware = require("./middlewares/auth.middleware");
 
 const app = express();
 
-// Global middlewares
+// ─── MIDDLEWARES ─────────────────────────────────────────────────────────────
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // Added for form-data support
 
-// Health check
+// ─── ROUTES ──────────────────────────────────────────────────────────────────
+
+// Health Check
 app.get("/", (req, res) => {
-  res.send("WalletCare API is running...");
+  res.status(200).json({ status: "success", message: "WalletCare API is running..." });
 });
 
-// Public routes
+// Public API
 app.use("/api/auth", authRoutes);
 app.use("/api/otp", otpRoutes);
 
-// Protected routes
+// Protected API (Apply middleware once to a group if possible, or per route)
 app.use("/api/user", authMiddleware, userRoutes);
-app.use("/api/account", authMiddleware, AccountRoutes);
+app.use("/api/account", authMiddleware, accountRoutes);
 app.use("/api/transaction", authMiddleware, transactionRoutes);
 app.use("/api/goals", authMiddleware, goalRoutes);
 app.use("/api/analytics", authMiddleware, analyticsRoutes);
-app.use("/api/notifications", authMiddleware, notificationRoutes);
 app.use("/api/feedback", authMiddleware, feedbackRoutes);
+app.use("/api/notifications", authMiddleware, notificationRoutes);
+app.use("/api/test", testRoutes);
+
+// ─── ERROR HANDLING ──────────────────────────────────────────────────────────
+
+// 404 Handler
+app.use((req, res) => {
+  res.status(404).json({ message: "Route not found" });
+});
+
+// Global Error Middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({
+    message: "Internal Server Error",
+    error: process.env.NODE_ENV === "development" ? err.message : {},
+  });
+});
 
 module.exports = app;

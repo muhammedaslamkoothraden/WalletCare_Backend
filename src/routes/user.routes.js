@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 
-const { getProfile, updateProfile, changePassword, forgotPassword, resetPassword, logoutUser, deleteAccount } = require("../controllers/user.controller");
+const { getProfile, updateProfile, updateFcmToken, changePassword, forgotPassword, resetPassword, logoutUser, deleteAccount } = require("../controllers/user.controller");
 
 const validate = require("../middlewares/validate.middleware");
 const { validateUpdateProfile, validateChangePassword, validateResetPassword, validateDeleteAccount } = require("../validators/user.validator");
@@ -11,6 +11,7 @@ const { generalLimiter, strictLimiter } = require("../middlewares/rateLimit.midd
 // Profile
 router.get("/profile", generalLimiter, getProfile);
 router.patch("/profile", generalLimiter, validateUpdateProfile, validate, updateProfile);
+router.patch("/fcm-token", generalLimiter, updateFcmToken);
 
 // Password
 router.patch("/password", generalLimiter, validateChangePassword, validate, changePassword);
