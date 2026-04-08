@@ -63,6 +63,22 @@ exports.getAnalyticsDashboard = async (req, res) => {
       baseMatch.accountId = new mongoose.Types.ObjectId(accountId);
     }
 
+    // ─── 2.5 Exclude Reversed Transactions and Their Parents ────────────
+    const reversalScope = accountId && accountId !== 'all' 
+       ? { userId, accountId: new mongoose.Types.ObjectId(accountId) } 
+       : { userId };
+
+    const reversals = await Ledger.find({ ...reversalScope, direction: 'REVERSAL' }).select('_id parentTransactionId').lean();
+    const excludedIds = new Set();
+    for (const r of reversals) {
+      excludedIds.add(r._id.toString());
+      if (r.parentTransactionId) excludedIds.add(r.parentTransactionId.toString());
+    }
+
+    if (excludedIds.size > 0) {
+      baseMatch._id = { $nin: [...excludedIds].map((id) => new mongoose.Types.ObjectId(id)) };
+    }
+
     // ─── 3. Run Aggregations ─────────────────────────────────────────────
     // NOTE: Using $convert is safer than $toDouble in case amount is null/missing
     const [cashflow, categorySpending, totalTransactions] = await Promise.all([
