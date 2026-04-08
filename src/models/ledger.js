@@ -32,21 +32,21 @@ const IMMUTABLE_FIELDS = new Set([
 // Strict enum — prevents 'Food' and 'food' from creating separate $group
 // buckets in aggregation. The set() normaliser handles case, enum handles
 // validity. To add a new category update this array only.
-const VALID_CATEGORIES = [
-  'Food',
-  'Transport',
-  'Shopping',
-  'Health',
-  'Entertainment',
-  'Education',
-  'Utilities',
-  'Rent',
-  'Salary',
-  'Investment',
-  'Transfer',
-  'Goals',
-  'Other',
-];
+// const VALID_CATEGORIES = [
+//   'Food',
+//   'Transport',
+//   'Shopping',
+//   'Health',
+//   'Entertainment',
+//   'Education',
+//   'Utilities',
+//   'Rent',
+//   'Salary',
+//   'Investment',
+//   'Transfer',
+//   'Goals',
+//   'Other',
+// ];
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -200,12 +200,12 @@ const LedgerSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
-      enum: {
-        values: VALID_CATEGORIES,
-        message:
-          "Category '{VALUE}' is not valid. Must be one of: " +
-          VALID_CATEGORIES.join(', '),
-      },
+      // enum: {
+      //   values: VALID_CATEGORIES,
+      //   message:
+      //     "Category '{VALUE}' is not valid. Must be one of: " +
+      //     VALID_CATEGORIES.join(', '),
+      // },
       set: (v) => {
         if (!v) return v;
         return v.charAt(0).toUpperCase() + v.slice(1).toLowerCase();
