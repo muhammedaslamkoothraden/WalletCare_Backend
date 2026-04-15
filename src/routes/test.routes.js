@@ -45,20 +45,30 @@ router.post('/test-hybrid', async (req, res) => {
     if (!userId) return res.status(400).json({ error: "Missing userId" });
 
     console.log(`🧪 Manually triggering Hybrid Alert for User: ${userId}`);
-    
+
     try {
         const result = await notificationService.createNotification(
-            userId, 
-            message || "This is a test hybrid alert!", 
-            "TEST_ALERT", 
+            userId,
+            message || "This is a test hybrid alert!",
+            "TEST_ALERT",
             { title: title || "Test Success! ✅", category: "SYSTEM" }
         );
-        
-        res.json({ 
-            success: true, 
+
+        res.json({
+            success: true,
             firebaseActive: isFirebaseInitialized,
-            data: result 
+            data: result
         });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+const { checkDailyInactivity } = require('../jobs/dailyInactivity.job');
+router.post('/test-inactivity', async (req, res) => {
+    try {
+        await checkDailyInactivity();
+        res.json({ success: true, message: "Daily inactivity job executed" });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

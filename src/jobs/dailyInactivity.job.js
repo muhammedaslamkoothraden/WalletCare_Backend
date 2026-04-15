@@ -17,9 +17,15 @@ exports.checkDailyInactivity = async () => {
         // (or null = never transacted) are considered inactive
         const inactivityThreshold = new Date(Date.now() - INACTIVITY_DAYS * 24 * 60 * 60 * 1000);
 
-        const users = await User.find({}, { _id: 1, fcmToken: 1 });
+        const users = await User.find({}, { _id: 1, fcmToken: 1, createdAt: 1 });
 
         for (const user of users) {
+            // GUARDBAND: newly created users cannot be "inactive for 3 days" if they haven't existed for 3 days.
+            if (user.createdAt && user.createdAt > inactivityThreshold) {
+                console.log(`[dailyInactivity] Skipping user ${user._id} — Account is less than 3 days old.`);
+                continue;
+            }
+
             // CHANGED: check Account.lastTransactionAt instead of Ledger.createdAt today
             const hasActiveAccount = await Account.exists({
                 userId: user._id,
@@ -28,7 +34,10 @@ exports.checkDailyInactivity = async () => {
                 ],
             });
 
-            if (hasActiveAccount) continue; // user transacted recently — skip
+            if (hasActiveAccount) {
+                console.log(`[dailyInactivity] Skipping user ${user._id} — Transacted within the active window.`);
+                continue; // user transacted recently — skip
+            }
 
             // CHANGED: dedup guard — skip if we already sent an inactivity FCM today
             const alreadySent = await Notification.findOne({
