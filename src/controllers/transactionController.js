@@ -2,9 +2,9 @@
 
 const mongoose = require('mongoose');
 const Decimal = require('decimal.js');
-const Ledger = require('../models/ledger'); // Adjusted to standard capitalization
+const Ledger = require('../models/Ledger');
 const Account = require('../models/Account');
-const Goal = require('../models/Goal'); // 🔥 ADDED: Import Goal model
+const Goal = require('../models/Goal');
 const { assertString, StringValidationError } = require('../helpers/sanitize');
 const {
   sanitizeCategory,
@@ -15,8 +15,8 @@ const {
 const { initiateTransfer, TransferError } = require('../services/accountTransfer');
 const { computeBalanceDelta, computeReversalDelta } = require('../services/ledgerDelta');
 const { reconcileAccount } = require('../services/reconciliation');
-const socketService = require('../services/socket.service');
-const Notification = require('../models/Notification');
+// CHANGED: import createNotification for dual-channel (socket + FCM) notifications
+const { createNotification } = require('../services/notification.service');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ const VALID_DIRECTIONS = Object.freeze(new Set([
 const VALID_DIRECTION_TYPE_COMBINATIONS = Object.freeze(
   new Map([
     ['STANDARD', Object.freeze(new Set(['INCOME', 'EXPENSE']))],
-    ['GOAL_ALLOCATION', Object.freeze(new Set(['EXPENSE', 'TRANSFER']))], // Adjusted to allow transfer if needed
+    ['GOAL_ALLOCATION', Object.freeze(new Set(['EXPENSE', 'TRANSFER']))],
     ['GOAL_DEALLOCATION', Object.freeze(new Set(['INCOME', 'TRANSFER']))],
     ['GOAL_COMPLETION', Object.freeze(new Set(['EXPENSE']))],
     ['ACCOUNT_TRANSFER_OUT', Object.freeze(new Set(['TRANSFER']))],
@@ -59,6 +59,10 @@ const REQUIRED_FIELDS = Object.freeze([
 const VALID_STATUSES = Object.freeze(new Set([
   'PENDING', 'COMPLETED', 'FAILED', 'VOIDED',
 ]));
+
+// CHANGED: define balance notification thresholds as named constants
+const LOW_BALANCE_THRESHOLD = 500;    // fire low-balance alert if available drops below this
+const LARGE_TX_THRESHOLD = 10000;  // fire large-transaction alert if amount >= this
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -102,13 +106,12 @@ function reconcileAfterTransaction(accountId, userId) {
     });
 }
 
-// ─── 1. processTransaction ────────────────────────────────────────────────────
-
 exports.processTransaction = async (req, res, next) => {
   const userId = req.user.id;
 
   let input;
   try {
+    // 0. Input Parsing & Basic Validation
     const missingField = REQUIRED_FIELDS.find((f) => !req.body[f]);
     if (missingField) throw new Error(`${missingField} is required`);
 
@@ -141,6 +144,7 @@ exports.processTransaction = async (req, res, next) => {
     idempotencyKey, linkedAccountId, transactedAt, parentTransactionId,
   } = input;
 
+  // Pre-Transaction Validation
   if (!mongoose.Types.ObjectId.isValid(accountId)) return errRes(res, 400, 'Invalid accountId');
   if (linkedAccountId && !mongoose.Types.ObjectId.isValid(linkedAccountId)) return errRes(res, 400, 'Invalid linkedAccountId');
   if (parentTransactionId && !mongoose.Types.ObjectId.isValid(parentTransactionId)) return errRes(res, 400, 'Invalid parentTransactionId');
@@ -163,6 +167,7 @@ exports.processTransaction = async (req, res, next) => {
     session.startTransaction();
 
     try {
+      // 1. Idempotency Check
       const existingLedger = await Ledger.findOne({ userId, idempotencyKey }).session(session).lean();
       if (existingLedger) {
         const account = await Account.findOne({ _id: existingLedger.accountId, userId }).session(session).lean();
@@ -170,6 +175,7 @@ exports.processTransaction = async (req, res, next) => {
         return duplicateResponse(res, existingLedger, account);
       }
 
+      // 2. Account Validation
       const account = await Account.findOne({ _id: accountId, userId }).session(session);
       if (!account) {
         await session.abortTransaction();
@@ -182,6 +188,7 @@ exports.processTransaction = async (req, res, next) => {
 
       let parentTx = null;
 
+      // 3. Reversal Validation
       if (direction === 'REVERSAL') {
         parentTx = await Ledger.findOne({ _id: parentTransactionId, userId, accountId }).session(session).lean();
         if (!parentTx) {
@@ -206,33 +213,27 @@ exports.processTransaction = async (req, res, next) => {
         }
       }
 
+      // 4. Calculate Balance Delta
       const currentAvailable = new Decimal(account.availableBalance.toString());
-      const currentReserved = new Decimal(account.reservedBalance.toString());
-      let balanceChange, reservedChange;
+      let balanceChange;
 
       if (direction === 'REVERSAL') {
-        ({ balanceChange, reservedChange } = computeReversalDelta(parentTx.direction, parentTx.transactionType, safeAmount));
+        ({ balanceChange } = computeReversalDelta(parentTx.direction, parentTx.transactionType, safeAmount));
       } else {
-        ({ balanceChange, reservedChange } = computeBalanceDelta(direction, transactionType, safeAmount));
+        ({ balanceChange } = computeBalanceDelta(direction, transactionType, safeAmount));
       }
 
       const newAvailable = currentAvailable.plus(balanceChange);
-      const newReserved = currentReserved.plus(reservedChange);
 
       if (newAvailable.isNegative()) {
         await session.abortTransaction();
         return errRes(res, 400, 'Insufficient available balance');
       }
-      if (newReserved.isNegative()) {
-        await session.abortTransaction();
-        return errRes(res, 400, 'Insufficient reserved balance');
-      }
 
-      // 🔥 UPDATE: Maintain goalId linkage on Reversal
+      // 5. Save Ledger
       const [newLedger] = await Ledger.create([{
         userId,
         accountId,
-        goalId: direction === 'REVERSAL' && parentTx.goalId ? parentTx.goalId : null,
         amount: toDecimal128(safeAmount),
         transactionType,
         direction,
@@ -246,95 +247,109 @@ exports.processTransaction = async (req, res, next) => {
         runningBalance: toDecimal128(newAvailable),
       }], { session });
 
+      // 6. Save Account Balance
       account.availableBalance = toDecimal128(newAvailable);
-      account.reservedBalance = toDecimal128(newReserved);
       await account.save({ session });
 
-      // 🔥 UPDATE: Sync Goal Balance during Reversal
+      // --- 7. GOAL SYNCHRONIZATION BLOCK ---
       if (direction === 'REVERSAL' && parentTx && parentTx.goalId) {
         const goal = await Goal.findOne({ _id: parentTx.goalId, userId }).session(session);
+        
         if (goal) {
-          const amt = parseFloat(safeAmount.toString());
+          const currentAmt = new Decimal(goal.currentAmount.toString());
+          const reversalAmt = new Decimal(safeAmount.toString());
+          const targetAmt = new Decimal(goal.targetAmount.toString());
+
           if (parentTx.direction === 'GOAL_ALLOCATION') {
-            // Reversing a deposit -> reduce goal savings
-            goal.currentAmount -= amt;
-            if (goal.currentAmount < goal.targetAmount) goal.status = 'active';
+            // Reversing a deposit: subtract the amount from the goal
+            const newAmt = currentAmt.minus(reversalAmt);
+            goal.currentAmount = newAmt.toNumber();
+            
+            // If the goal drops below target, make it active again
+            if (newAmt.lessThan(targetAmt)) {
+                goal.status = 'active';
+            }
           } else if (parentTx.direction === 'GOAL_DEALLOCATION') {
-            // Reversing a withdrawal -> increase goal savings
-            goal.currentAmount += amt;
-            if (goal.currentAmount >= goal.targetAmount) goal.status = 'completed';
+            // Reversing a withdrawal: add the amount back to the goal
+            const newAmt = currentAmt.plus(reversalAmt);
+            goal.currentAmount = newAmt.toNumber();
+            
+            // If the goal hits the target again, mark as completed
+            if (newAmt.greaterThanOrEqualTo(targetAmt)) {
+                goal.status = 'completed';
+            }
           }
+          
+          // Save the goal within the same database transaction
           await goal.save({ session });
         }
       }
+      // ----------------------------------
 
+      // 8. Commit & Reconcile
       await session.commitTransaction();
       reconcileAfterTransaction(accountId, userId);
-      // ─── 🔔 REAL-TIME NOTIFICATION ──────────────────────────────────────
-      try {
-        const isExpense = transactionType === 'EXPENSE' || direction === 'GOAL_ALLOCATION';
-        const isIncome = transactionType === 'INCOME' || direction === 'GOAL_DEALLOCATION';
-        const isTransfer = TRANSFER_DIRECTIONS.has(direction);
 
-        let notifType = 'LARGE_TRANSACTION';
-        let notifCategory = 'WALLET_TRANSACTION';
-        let notifTitle = '💸 Transaction Recorded';
-        let notifMessage = `₹${safeAmount} ${isExpense ? 'spent' : isTransfer ? 'transferred' : 'received'} · Balance: ₹${newAvailable.toFixed(2)}`;
+      // 9. Trigger Notifications (Premium Professional Messaging)
+      const isExpense = transactionType === 'EXPENSE';
+      const isTransfer = TRANSFER_DIRECTIONS.has(direction);
+      const amountDecimal = new Decimal(safeAmount.toString());
+      
+      // Parse the specific account's minBalance (defaults to 0 if not set)
+      const minBalance = new Decimal(account.minBalance?.toString() || '0');
+      const accountName = account.name || 'Account';
 
-        // Override for low balance
-        if (newAvailable.toNumber() < 50 && !isIncome) {
-          notifType = 'LOW_BALANCE';
-          notifTitle = '⚠️ Low Balance Alert';
-          notifMessage = `Your balance is down to ₹${newAvailable.toFixed(2)}. Consider topping up.`;
-        } else if (isTransfer) {
-          notifType = 'TRANSFER_SUCCESS';
-          notifTitle = '🔄 Transfer Successful';
-        }
+      // Trigger if a target minimum is set (> 0) and the balance falls below it
+      if (isExpense && minBalance.greaterThan(0) && newAvailable.lessThan(minBalance)) {
+        try {
+          await createNotification(
+            userId,
+            `Balance Alert: The available balance in your '${accountName}' account has fallen below your set minimum of ₹${minBalance.toFixed(2)}. Your current balance is ₹${newAvailable.toFixed(2)}.`,
+            'low_balance'
+          );
+        } catch (e) { console.warn('[processTransaction] low_balance notification failed:', e.message); }
 
-        const savedNotif = await Notification.create({
-          userId,
-          title: notifTitle,
-          message: notifMessage,
-          category: notifCategory,
-          type: notifType,
-        });
-
-        // .toObject() converts Mongoose doc → plain JS object so Flutter jsonEncode works
-        socketService.sendNotification(userId, savedNotif.toObject());
-      } catch (notifError) {
-        console.error("⚠️ Notification send failed (non-fatal):", notifError.message);
+      } else if (amountDecimal.greaterThanOrEqualTo(LARGE_TX_THRESHOLD)) {
+        const actionWord = isTransfer ? 'transferred' : isExpense ? 'debited' : 'credited';
+        try {
+          await createNotification(
+            userId,
+            `Transaction Alert: A transaction of ₹${amountDecimal.toFixed(2)} was recently ${actionWord} on your '${accountName}' account. Your updated balance is ₹${newAvailable.toFixed(2)}.`,
+            'large_transaction'
+          );
+        } catch (e) { console.warn('[processTransaction] large_transaction notification failed:', e.message); }
       }
 
+      // 10. Respond
       return res.status(201).json({
         success: true,
         txid: newLedger._id,
         availableBalance: newAvailable.toFixed(2),
-        reservedBalance: newReserved.toFixed(2),
       });
 
     } catch (error) {
       if (session.inTransaction()) await session.abortTransaction().catch(() => { });
+      
       const isVersionError = error.name === 'VersionError';
       const isWriteConflict = error.code === 112 || error.hasErrorLabel?.('TransientTransactionError');
 
+      // Retry mechanism for transient MongoDB errors
       if ((isVersionError || isWriteConflict) && attempt < MAX_RETRIES) {
         await new Promise(r => setTimeout(r, Math.random() * 50 * attempt));
         continue;
       }
+      
       if (error.code === 11000) return errRes(res, 409, 'Duplicate transaction detected');
       return next(error);
+      
     } finally {
       session.endSession();
     }
   }
 };
-
 // ─── 2. accountTransfer ───────────────────────────────────────────────────────
-// (Remains Unchanged)
 
 exports.accountTransfer = async (req, res, next) => {
-  // ... (Your existing accountTransfer code remains exactly the same)
-  // Included below just for completeness so you can copy/paste the file
   const userId = req.user.id;
   let input;
   try {
@@ -380,7 +395,6 @@ exports.accountTransfer = async (req, res, next) => {
 };
 
 // ─── 3. getHistory ────────────────────────────────────────────────────────────
-// (Remains Unchanged)
 
 exports.getHistory = async (req, res, next) => {
   try {
@@ -499,17 +513,15 @@ exports.voidTransaction = async (req, res, next) => {
       account.reservedBalance = toDecimal128(newReserved);
       await account.save({ session });
 
-      // 🔥 UPDATE: Sync Goal Balance during Void
+      // Sync Goal Balance during Void
       if (ledger.goalId) {
         const goal = await Goal.findOne({ _id: ledger.goalId, userId }).session(session);
         if (goal) {
           const amt = parseFloat(ledger.amount.toString());
           if (ledger.direction === 'GOAL_ALLOCATION') {
-            // Voiding a deposit -> reduce goal savings
             goal.currentAmount -= amt;
             if (goal.currentAmount < goal.targetAmount) goal.status = 'active';
           } else if (ledger.direction === 'GOAL_DEALLOCATION') {
-            // Voiding a withdrawal -> increase goal savings
             goal.currentAmount += amt;
             if (goal.currentAmount >= goal.targetAmount) goal.status = 'completed';
           }
@@ -542,13 +554,13 @@ exports.voidTransaction = async (req, res, next) => {
     }
   }
 };
+
 // ─── 5. getLatestTransactions ──────────────────────────────────────────────────
 
 exports.getLatestTransactions = async (req, res, next) => {
   try {
     const userId = req.user.id;
 
-    // 1. Exclude reversed pairs so they don't clutter the recent list
     const reversals = await Ledger.find({ userId, direction: 'REVERSAL' })
       .select('_id parentTransactionId')
       .lean();
@@ -561,17 +573,16 @@ exports.getLatestTransactions = async (req, res, next) => {
 
     const query = {
       userId: new mongoose.Types.ObjectId(userId),
-      status: 'COMPLETED' // Hide voided/pending items
+      status: 'COMPLETED',
     };
 
     if (excludedIds.size > 0) {
       query._id = { $nin: [...excludedIds].map((id) => new mongoose.Types.ObjectId(id)) };
     }
 
-    // 2. Fetch latest 5 sorted by createdAt
     const latestTransactions = await Ledger.find(query)
       .populate('accountId', 'name')
-      .sort({ createdAt: -1 }) // Sorts by newest first based on creation time
+      .sort({ createdAt: -1 })
       .limit(5)
       .lean();
 
@@ -587,5 +598,140 @@ exports.getLatestTransactions = async (req, res, next) => {
   } catch (error) {
     console.error('[getLatestTransactions] Error:', error);
     return res.status(500).json({ success: false, error: 'Failed to fetch latest transactions' });
+  }
+}
+
+exports.reserveFunds = async (req, res, next) => {
+  const userId = req.user.id;
+  let input;
+
+  try {
+    // action must be explicitly 'RESERVE' (move to reserved) or 'RELEASE' (move to available)
+    const missing = ['accountId', 'amount', 'action', 'idempotencyKey'].find((f) => !req.body[f]);
+    if (missing) throw new Error(`${missing} is required`);
+
+    input = {
+      accountId: req.body.accountId,
+      amount: parseAmount(req.body.amount), // Assuming this handles strict parsing
+      action: req.body.action.toUpperCase(),
+      category: sanitizeCategory(req.body.category || 'System Reserve'),
+      description: sanitizeOptionalDescription(req.body.description),
+      idempotencyKey: assertString(req.body.idempotencyKey, 'idempotencyKey', { maxLength: 128 }),
+    };
+
+    if (input.idempotencyKey.length < 8) {
+      throw new StringValidationError('idempotencyKey must be at least 8 characters');
+    }
+    if (!['RESERVE', 'RELEASE'].includes(input.action)) {
+      throw new Error("action must be exactly 'RESERVE' or 'RELEASE'");
+    }
+  } catch (error) {
+    return errRes(res, 400, error.message);
+  }
+
+  const { accountId, amount: safeAmount, action, category: safeCategory, description: safeDescription, idempotencyKey } = input;
+
+  if (!mongoose.Types.ObjectId.isValid(accountId)) return errRes(res, 400, 'Invalid accountId');
+
+  const MAX_RETRIES = 3;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      // ── 1. Idempotency Check ─────────────────────────────────────────────────
+      const existingLedger = await Ledger.findOne({ userId, idempotencyKey }).session(session).lean();
+      if (existingLedger) {
+        const account = await Account.findOne({ _id: existingLedger.accountId, userId }).session(session).lean();
+        await session.abortTransaction();
+        return duplicateResponse(res, existingLedger, account);
+      }
+
+      // ── 2. Account Validation ────────────────────────────────────────────────
+      const account = await Account.findOne({ _id: accountId, userId }).session(session);
+      if (!account) {
+        await session.abortTransaction();
+        return errRes(res, 404, 'Account not found');
+      }
+      if (account.status === 'CLOSED' || account.status === 'FROZEN') {
+        await session.abortTransaction();
+        return errRes(res, 400, `Cannot modify reserves on a ${account.status.toLowerCase()} account`);
+      }
+
+      // ── 3. Exact Math Calculation ────────────────────────────────────────────
+      const currentAvailable = new Decimal(account.availableBalance.toString());
+      const currentReserved = new Decimal(account.reservedBalance.toString());
+      const moveAmount = new Decimal(safeAmount.toString());
+
+      let newAvailable, newReserved, direction;
+
+      if (action === 'RESERVE') {
+        direction = 'RESERVED_IN'; // Funds going IN to the reserve
+        newAvailable = currentAvailable.minus(moveAmount);
+        newReserved = currentReserved.plus(moveAmount);
+
+        if (newAvailable.isNegative()) {
+          await session.abortTransaction();
+          return errRes(res, 400, `Insufficient available balance to reserve ₹${moveAmount.toFixed(2)}`);
+        }
+      } else {
+        direction = 'RESERVED_OUT'; // Funds coming OUT of the reserve
+        newAvailable = currentAvailable.plus(moveAmount);
+        newReserved = currentReserved.minus(moveAmount);
+
+        if (newReserved.isNegative()) {
+          await session.abortTransaction();
+          return errRes(res, 400, `Insufficient reserved balance to release ₹${moveAmount.toFixed(2)}`);
+        }
+      }
+
+      // ── 4. Write Ledger Entry ────────────────────────────────────────────────
+      const [newLedger] = await Ledger.create([{
+        userId,
+        accountId,
+        amount: toDecimal128(safeAmount),
+        transactionType: 'TRANSFER', // It is an intra-account transfer
+        direction,
+        category: safeCategory,
+        description: safeDescription,
+        idempotencyKey,
+        status: 'COMPLETED',
+        transactedAt: new Date(),
+        runningBalance: toDecimal128(newAvailable), // Track the new available balance
+      }], { session });
+
+      // ── 5. Update Account Balances ───────────────────────────────────────────
+      account.availableBalance = toDecimal128(newAvailable);
+      account.reservedBalance = toDecimal128(newReserved);
+      await account.save({ session });
+
+      await session.commitTransaction();
+      
+      // Fire reconciliation silently in background
+      reconcileAfterTransaction(accountId, userId);
+
+      return res.status(201).json({
+        success: true,
+        action,
+        txid: newLedger._id,
+        availableBalance: newAvailable.toFixed(2),
+        reservedBalance: newReserved.toFixed(2),
+      });
+
+    } catch (error) {
+      if (session.inTransaction()) await session.abortTransaction().catch(() => {});
+      const isVersionError = error.name === 'VersionError';
+      const isWriteConflict = error.code === 112 || error.hasErrorLabel?.('TransientTransactionError');
+
+      if ((isVersionError || isWriteConflict) && attempt < MAX_RETRIES) {
+        await new Promise(r => setTimeout(r, Math.random() * 50 * attempt));
+        continue;
+      }
+      if (error.code === 11000) return errRes(res, 409, 'Duplicate transaction detected');
+      return next(error);
+    } finally {
+      session.endSession();
+    }
   }
 };

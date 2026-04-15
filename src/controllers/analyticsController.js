@@ -1,30 +1,26 @@
 const mongoose = require('mongoose');
-const Ledger = require('../models/ledger');
+const Ledger = require('../models/Ledger');
 const Account = require('../models/Account');
 const Goal = require('../models/Goal');
 
-
+// ─── DASHBOARD ANALYTICS ──────────────────────────────────────────────────
 exports.getAnalyticsDashboard = async (req, res) => {
   try {
     const userId = new mongoose.Types.ObjectId(req.user.id);
     
-    // 1. Extract new month and year parameters
     const { accountId, timeframe = 'Month', month, year } = req.query;
 
     const now = new Date();
     let startDate;
     let endDate; 
 
-    // ─── 1. Improved Date Calculation with Explicit End Dates ───────────
+    // Improved Date Calculation with Explicit End Dates
     if (month && year) {
-      // If client requests a SPECIFIC month (e.g., month=3, year=2024)
-      const m = parseInt(month, 10) - 1; // JavaScript months are 0-indexed (0 = Jan)
+      const m = parseInt(month, 10) - 1; 
       const y = parseInt(year, 10);
-      
       startDate = new Date(y, m, 1, 0, 0, 0, 0);
-      endDate = new Date(y, m + 1, 1, 0, 0, 0, 0); // Exact start of the next month
+      endDate = new Date(y, m + 1, 1, 0, 0, 0, 0); 
     } else {
-      // Fallback to relative timeframes (Current Day, Week, Month, Year)
       switch (timeframe.toLowerCase()) {
         case 'day':
           startDate = new Date();
@@ -43,19 +39,18 @@ exports.getAnalyticsDashboard = async (req, res) => {
           startDate = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0);
           endDate = new Date(now.getFullYear() + 1, 0, 1, 0, 0, 0, 0);
           break;
-        default: // 'month' (Current month)
+        default: 
           startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
           endDate = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
       }
     }
 
-    // ─── 2. Build Base Match Stage (Now with a strict window) ───────────
     const baseMatch = {
       userId,
       status: 'COMPLETED',
       transactedAt: { 
         $gte: startDate, 
-        $lt: endDate // 🔥 Prevents bleeding into the next month
+        $lt: endDate 
       },
     };
 
@@ -63,7 +58,7 @@ exports.getAnalyticsDashboard = async (req, res) => {
       baseMatch.accountId = new mongoose.Types.ObjectId(accountId);
     }
 
-    // ─── 2.5 Exclude Reversed Transactions and Their Parents ────────────
+    // Exclude Reversed Transactions and Their Parents
     const reversalScope = accountId && accountId !== 'all' 
        ? { userId, accountId: new mongoose.Types.ObjectId(accountId) } 
        : { userId };
@@ -79,8 +74,7 @@ exports.getAnalyticsDashboard = async (req, res) => {
       baseMatch._id = { $nin: [...excludedIds].map((id) => new mongoose.Types.ObjectId(id)) };
     }
 
-    // ─── 3. Run Aggregations ─────────────────────────────────────────────
-    // NOTE: Using $convert is safer than $toDouble in case amount is null/missing
+    // Run Aggregations
     const [cashflow, categorySpending, totalTransactions] = await Promise.all([
       Ledger.aggregate([
         { $match: baseMatch },
@@ -105,7 +99,7 @@ exports.getAnalyticsDashboard = async (req, res) => {
       Ledger.countDocuments(baseMatch),
     ]);
 
-    // ─── 4. Format Results ───────────────────────────────────────────────
+    // Format Results
     const income = cashflow.find((c) => c._id === 'INCOME')?.total || 0;
     const expense = cashflow.find((c) => c._id === 'EXPENSE')?.total || 0;
 
@@ -146,12 +140,15 @@ exports.getAnalyticsDashboard = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
-// Example of the ObjectId Fix for your Goal Analytics:
+
+// ─── GOAL ANALYTICS ───────────────────────────────────────────────────────
+
 exports.getGoalProgressAnalytics = async (req, res) => {
   try {
-    const userId = new mongoose.Types.ObjectId(req.user.id); // ALWAYS CAST THIS
+    const userId = new mongoose.Types.ObjectId(req.user.id);
+    
     const analytics = await Goal.aggregate([
-      { $match: { userId: userId } }, // Uses the casted ID
+      { $match: { userId: userId } },
       {
         $group: {
           _id: null,
@@ -177,72 +174,12 @@ exports.getGoalProgressAnalytics = async (req, res) => {
   }
 };
 
-
-// ANALYTICS: GOAL PROGRESS
-exports.getGoalProgressAnalytics = async (req, res) => {
-  try {
-
-    const analytics = await Goal.aggregate([
-      {
-        $match: { userId: req.user.id }
-      },
-      {
-        $group: {
-          _id: null,
-          totalGoals: { $sum: 1 },
-
-          completedGoals: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "completed"] }, 1, 0]
-            }
-          },
-
-          activeGoals: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "active"] }, 1, 0]
-            }
-          },
-
-          overdueGoals: {
-            $sum: {
-              $cond: [{ $eq: ["$status", "overdue"] }, 1, 0]
-            }
-          },
-
-          averageProgress: {
-            $avg: {
-              $multiply: [
-                { $divide: ["$currentAmount", "$targetAmount"] },
-                100
-              ]
-            }
-          }
-        }
-      }
-    ]);
-
-    res.status(200).json({
-      success: true,
-      data: analytics[0] || {}
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
-
-
-// ANALYTICS: GOAL CATEGORY STATS
 exports.getGoalCategoryStats = async (req, res) => {
   try {
+    const userId = new mongoose.Types.ObjectId(req.user.id);
 
     const stats = await Goal.aggregate([
-      {
-        $match: { userId: req.user.id }
-      },
+      { $match: { userId: userId } },
       {
         $group: {
           _id: "$category",
@@ -250,31 +187,21 @@ exports.getGoalCategoryStats = async (req, res) => {
           totalTarget: { $sum: "$targetAmount" }
         }
       },
-      {
-        $sort: { count: -1 }
-      }
+      { $sort: { count: -1 } }
     ]);
 
-    res.status(200).json({
-      success: true,
-      data: stats
-    });
-
+    res.status(200).json({ success: true, data: stats });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
-// ANALYTICS: MONTHLY GOAL SAVINGS
+
 exports.getMonthlyGoalSavings = async (req, res) => {
   try {
+    const userId = new mongoose.Types.ObjectId(req.user.id);
 
     const stats = await Goal.aggregate([
-      {
-        $match: { userId: req.user.id }
-      },
+      { $match: { userId: userId } },
       {
         $project: {
           month: { $month: "$createdAt" },
@@ -287,158 +214,109 @@ exports.getMonthlyGoalSavings = async (req, res) => {
           totalSaved: { $sum: "$currentAmount" }
         }
       },
-      {
-        $sort: { _id: 1 }
-      }
+      { $sort: { _id: 1 } }
     ]);
 
-    res.status(200).json({
-      success: true,
-      data: stats
-    });
-
+    res.status(200).json({ success: true, data: stats });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// ANALYTICS: GOAL PROGRESS DISTRIBUTION
-exports.goalProgressDistribution =
-  async (req, res) => {
+exports.goalProgressDistribution = async (req, res) => {
+  try {
+    const userId = new mongoose.Types.ObjectId(req.user.id);
 
-    const stats =
-      await Goal.aggregate([
-
-        {
-          $match: {
-            userId: req.user.id
-          }
-        },
-
-        {
-          $project: {
-
-            progress: {
-              $multiply: [
-                {
-                  $divide: [
-                    "$currentAmount",
-                    "$targetAmount"
-                  ]
-                },
-                100
-              ]
-            }
-
-          }
-        },
-
-        {
-          $bucket: {
-
-            groupBy: "$progress",
-
-            boundaries: [0, 25, 50, 75, 100],
-
-            default: "completed",
-
-            output: {
-              count: { $sum: 1 }
-            }
-
-          }
-
-        }
-
-      ]);
-
-    res.json({
-      success: true,
-      data: stats
-    });
-
-  };
-
-// ANALYTICS: AVERAGE COMPLETION TIME FOR GOALS
-exports.averageCompletionTime =
-  async (req, res) => {
-
-    const stats =
-      await Goal.aggregate([
-
-        {
-          $match: {
-            status: "completed"
-          }
-        },
-
-        {
-          $project: {
-
-            duration: {
-              $subtract: [
-                "$completedAt",
-                "$createdAt"
-              ]
-            }
-
-          }
-        },
-
-        {
-          $group: {
-
-            _id: null,
-
-            avgTime: {
-              $avg: "$duration"
-            }
-
+    const stats = await Goal.aggregate([
+      { $match: { userId: userId } },
+      {
+        $project: {
+          progress: {
+            $multiply: [
+              { $divide: ["$currentAmount", "$targetAmount"] },
+              100
+            ]
           }
         }
-
-      ]);
-
-    res.json({
-      success: true,
-      data: stats
-    });
-
-  };
-
-//  ANALYTICS: TOTAL SAVED AMOUNT BY CATEGORY
-exports.categorySavings =
-  async (req, res) => {
-
-    const stats =
-      await Goal.aggregate([
-
-        {
-          $match: {
-            userId: req.user.id
-          }
-        },
-
-        {
-          $group: {
-
-            _id: "$category",
-
-            totalSaved: {
-              $sum: "$currentAmount"
-            }
-
+      },
+      {
+        $bucket: {
+          groupBy: "$progress",
+          boundaries: [0, 25, 50, 75, 100],
+          default: "completed", // If progress is 100 or above
+          output: {
+            count: { $sum: 1 }
           }
         }
+      }
+    ]);
 
-      ]);
+    res.json({ success: true, data: stats });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
 
-    res.json({
-      success: true,
-      data: stats
+exports.averageCompletionTime = async (req, res) => {
+  try {
+    const userId = new mongoose.Types.ObjectId(req.user.id);
+
+    const stats = await Goal.aggregate([
+      { 
+        $match: { 
+          userId: userId, 
+          status: "completed",
+          completedAt: { $exists: true } // Ensure it was actually marked completed
+        } 
+      },
+      {
+        $project: {
+          durationMs: {
+            $subtract: ["$completedAt", "$createdAt"]
+          }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          avgTimeMs: { $avg: "$durationMs" }
+        }
+      }
+    ]);
+
+    // Safely convert milliseconds to days to return to the frontend
+    let averageDays = 0;
+    if (stats.length > 0 && stats[0].avgTimeMs) {
+      averageDays = stats[0].avgTimeMs / (1000 * 60 * 60 * 24);
+    }
+
+    res.json({ 
+      success: true, 
+      data: { 
+        averageCompletionDays: parseFloat(averageDays.toFixed(1)) 
+      } 
     });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
 
-  };
+exports.categorySavings = async (req, res) => {
+  try {
+    const userId = new mongoose.Types.ObjectId(req.user.id);
+
+    const stats = await Goal.aggregate([
+      { $match: { userId: userId } },
+      {
+        $group: {
+          _id: "$category",
+          totalSaved: { $sum: "$currentAmount" }
+        }
+      }
+    ]);
+
+    res.json({ success: true, data: stats });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

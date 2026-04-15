@@ -3,6 +3,7 @@
 const mongoose = require('mongoose');
 const Decimal = require('decimal.js');
 
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const VALID_TRANSITIONS = {
@@ -141,6 +142,8 @@ const LedgerSchema = new mongoose.Schema(
         'ACCOUNT_TRANSFER_IN',
         'ACCOUNT_TRANSFER_OUT',
         'REVERSAL',
+        'RESERVED_IN',
+        'RESERVED_OUT',
       ],
       required: true,
       default: 'STANDARD',

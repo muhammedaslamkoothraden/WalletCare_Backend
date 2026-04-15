@@ -1,7 +1,8 @@
-const Notification = require("../models/Notification");
+const { Notification } = require("../models/Notification");
 const { User } = require("../models/user");
 const socketService = require("./socket.service");
 const { admin, isFirebaseInitialized } = require("../config/firebase");
+
 
 /**
  * Type → { schemaType, category, title } mapping.
@@ -53,7 +54,7 @@ async function sendHybridNotification(userId, message, title, category, typeInfo
     isOnline = socketService.isUserOnline(userId);
     socketService.sendNotification(userId, notification.toObject());
   } catch (socketErr) {
-    console.warn("⚠️ WebSocket Push failed:", socketErr.message);
+    console.warn('WebSocket push failed', { error: socketErr.message, userId });
   }
 
   // 3. ALWAYS emit FCM Push (OS manages background display natively, Flutter handles dupes locally)
@@ -93,16 +94,16 @@ async function sendHybridNotification(userId, message, title, category, typeInfo
 
     try {
       await admin.messaging().send(fcmPayload);
-      console.log(`✅ FCM Push successfully sent to User ${userId}`);
+      console.log('FCM push sent', { userId });
     } catch (fcmErr) {
-      console.error(`❌ FCM Push failed:`, fcmErr.code);
+      console.error('FCM push failed', { code: fcmErr.code, userId });
 
       // ERROR HANDLING: Cleanup dead or invalid tokens automatically
       if (
         fcmErr.code === 'messaging/invalid-registration-token' ||
         fcmErr.code === 'messaging/registration-token-not-registered'
       ) {
-        console.log(`🧹 Removing dead FCM token for User ${userId}`);
+        console.warn('Dead FCM token removed', { userId });
         await User.findByIdAndUpdate(userId, { fcmToken: null });
       }
     }

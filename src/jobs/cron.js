@@ -4,6 +4,7 @@ const { updateGoalStatus } = require("./goalStatus.job");
 const { updateOverdueGoals } = require("./goalOverdue.job");
 const { sendGoalReminders } = require("./goalReminder.job");
 const { runReconciliationJob } = require("./reconciliationjob");  // add this
+const { checkDailyInactivity } = require("./dailyInactivity.job");
 
 console.log("Cron jobs initialized...");
 
@@ -47,4 +48,15 @@ Runs every day at 2 AM
 cron.schedule("0 2 * * *", async () => {
   console.log("Running reconciliation job...");
   await runReconciliationJob();
+});
+
+/*
+-----------------------------------------
+Daily Inactivity Reminder Job
+Runs every day at 8 PM
+-----------------------------------------
+*/
+cron.schedule("0 20 * * *", async () => {
+  console.log("Running daily inactivity job...");
+  await checkDailyInactivity();
 });

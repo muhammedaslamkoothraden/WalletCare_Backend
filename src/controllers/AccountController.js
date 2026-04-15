@@ -3,7 +3,9 @@
 const mongoose = require('mongoose');
 const Decimal = require('decimal.js');
 const Account = require('../models/Account');
+const Ledger = require('../models/Ledger');
 const { assertString, StringValidationError } = require('../helpers/sanitize');
+const { resolveMinBalance } = require('../helpers/balanceUtils');
 
 const VALID_ACCOUNT_TYPES = Object.freeze(new Set(['CASH', 'BANK']));
 
@@ -12,7 +14,6 @@ function errRes(res, status, message) {
 }
 
 // ─── getAccountBalances ───────────────────────────────────────────────────────
-
 exports.getAccountBalances = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -21,17 +22,13 @@ exports.getAccountBalances = async (req, res) => {
     const query = { userId, status: { $ne: 'CLOSED' } };
 
     if (accountId) {
-      if (!mongoose.Types.ObjectId.isValid(accountId)) {
-        return errRes(res, 400, 'Invalid accountId');
-      }
+      if (!mongoose.Types.ObjectId.isValid(accountId)) return errRes(res, 400, 'Invalid accountId');
       query._id = accountId;
     }
 
     if (type && type.toUpperCase() !== 'ALL') {
       const cleanType = type.toUpperCase();
-      if (!VALID_ACCOUNT_TYPES.has(cleanType)) {
-        return errRes(res, 400, `Invalid account type: ${type}. Must be CASH, BANK, or ALL`);
-      }
+      if (!VALID_ACCOUNT_TYPES.has(cleanType)) return errRes(res, 400, `Invalid type: ${type}`);
       query.type = cleanType;
     }
 
@@ -52,8 +49,6 @@ exports.getAccountBalances = async (req, res) => {
       try {
         avail = new Decimal(acc.availableBalance?.toString() || '0');
         resv = new Decimal(acc.reservedBalance?.toString() || '0');
-        if (avail.isNegative()) avail = new Decimal(0);
-        if (resv.isNegative()) resv = new Decimal(0);
       } catch {
         avail = new Decimal(0);
         resv = new Decimal(0);
@@ -67,6 +62,7 @@ exports.getAccountBalances = async (req, res) => {
         name: acc.name,
         type: acc.type,
         currency: acc.currency,
+        minBalance: acc.minBalance?.toString() || '0.00',
         available: avail.toFixed(2),
         reserved: resv.toFixed(2),
         total: avail.plus(resv).toFixed(2),
@@ -85,130 +81,157 @@ exports.getAccountBalances = async (req, res) => {
       accounts: formatted,
     });
   } catch (error) {
-    console.error(error);
     return errRes(res, 500, 'Failed to fetch balances');
   }
 };
 
 // ─── createAccount ────────────────────────────────────────────────────────────
-
 exports.createAccount = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
+
   try {
     const userId = req.user.id;
-    const { name, type } = req.body;
-    const cleanType = type?.toUpperCase();
+    const { name, type, minBalance, initialDeposit } = req.body;
 
+    // Fix #6: validate type early with a clean 400 response
+    const cleanType = type?.toUpperCase();
     if (!VALID_ACCOUNT_TYPES.has(cleanType)) {
       await session.abortTransaction();
-      return errRes(res, 400, 'Type must be CASH or BANK');
+      return errRes(res, 400, 'Invalid account type. Must be CASH or BANK');
     }
 
-    let cleanName;
+    // Fix #7: sanitize name consistently with updateAccount
+    let validatedName;
     try {
-      cleanName = assertString(name, 'Account name', { maxLength: 32 });
+      validatedName = assertString(name, 'Account name', { maxLength: 32 });
     } catch (err) {
       await session.abortTransaction();
-      if (err instanceof StringValidationError) return errRes(res, 400, err.message);
-      throw err;
+      return errRes(res, 400, err.message);
     }
 
-    const existingCount = await Account.countDocuments(
-      { userId, status: { $ne: 'CLOSED' } },
-      { session }
-    );
-    const isDefault = existingCount === 0;
+    // Fix #5: use resolveMinBalance instead of raw fallback
+    let resolvedMin;
+    try {
+      resolvedMin = resolveMinBalance(minBalance, cleanType);
+    } catch (err) {
+      await session.abortTransaction();
+      return errRes(res, 400, err.message);
+    }
 
+    const depositAmount = new Decimal(initialDeposit || '0');
+
+    // 1. Create the Account with a 0.00 balance
     const [newAccount] = await Account.create(
-      [{ userId, name: cleanName, type: cleanType, isDefault }],
+      [{
+        userId,
+        name: validatedName,
+        type: cleanType,
+        minBalance: resolvedMin,
+        availableBalance: '0.00',
+      }],
       { session }
     );
+
+    // 2. Create the Ledger Entry for the initial deposit
+    if (depositAmount.greaterThan(0)) {
+      await Ledger.create([{
+        userId,
+        accountId: newAccount._id,
+        transactionType: 'INCOME',
+        direction: 'STANDARD',
+        category: 'Initial Deposit',
+        amount: depositAmount.toFixed(2),
+        description: `Account Opening Deposit`,
+        status: 'COMPLETED',
+        idempotencyKey: `init-dep-${newAccount._id}`,
+        transactedAt: new Date(),
+      }], { session });
+
+      // 3. Update the Account balance to reflect the deposit
+      newAccount.availableBalance = depositAmount.toFixed(2);
+      await newAccount.save({ session });
+    }
 
     await session.commitTransaction();
     return res.status(201).json({ success: true, data: newAccount });
+
   } catch (error) {
     await session.abortTransaction();
-
-    if (error.code === 11000) {
-      // Two distinct duplicate key scenarios share the same error code:
-      // 1. { userId, _normalizedName } — user already has an account with this name.
-      // 2. { userId, isDefault: true } — concurrent request already set a default.
-      const isNameConflict = error.message?.includes('_normalizedName');
-      const isDefaultConflict = error.message?.includes('isDefault');
-
-      if (isNameConflict) return errRes(res, 409, 'An account with this name already exists');
-      if (isDefaultConflict) return errRes(res, 409, 'A default account was already created — please retry');
-
-      return errRes(res, 409, 'Duplicate account entry');
+    if (error.code === 11000 && error.message.includes('_normalizedName')) {
+      return errRes(res, 409, 'An account with this name already exists');
     }
-
-    console.error(error);
-    return errRes(res, 500, 'Account creation failed');
+    return errRes(res, 500, 'Failed to create account');
   } finally {
     session.endSession();
   }
 };
-
-// ─── setAccountAsDefault ──────────────────────────────────────────────────────
-
 exports.setAccountAsDefault = async (req, res) => {
   const session = await mongoose.startSession();
-  session.startTransaction();
+  
   try {
+    session.startTransaction();
     const userId = req.user.id;
     const { accountId } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(accountId)) {
       await session.abortTransaction();
-      return errRes(res, 400, 'Invalid accountId');
+      return res.status(400).json({ success: false, error: 'Invalid accountId' });
     }
 
-    const target = await Account.findOne(
-      { _id: accountId, userId, status: { $ne: 'CLOSED' } },
-      null,
-      { session }
-    );
+    // 1. Verify the account exists, belongs to the user, and isn't closed
+    const target = await Account.findOne({ 
+      _id: accountId, 
+      userId: userId, 
+      status: { $ne: 'CLOSED' } 
+    }).session(session);
 
     if (!target) {
       await session.abortTransaction();
-      return errRes(res, 404, 'Account not found');
+      return res.status(404).json({ success: false, error: 'Account not found' });
     }
 
     if (target.isDefault) {
       await session.abortTransaction();
-      return res.status(200).json({ success: true, message: 'Account is already the default' });
+      return res.status(200).json({ success: true, message: 'Account is already default' });
     }
 
-    await Account.updateMany({ userId }, { isDefault: false }, { session });
+    // 2. Bypass Mongoose Middleware using native collection updates for pure speed and safety
+    // This unsets isDefault for all other accounts belonging to this user
+    await Account.collection.updateMany(
+      { userId: new mongoose.Types.ObjectId(userId), _id: { $ne: new mongoose.Types.ObjectId(accountId) } },
+      { $set: { isDefault: false } },
+      { session }
+    );
 
-    target.isDefault = true;
-    await target.save({ session });
+    // 3. Set the target account to default (bypassing .save() to avoid version errors)
+    await Account.collection.updateOne(
+      { _id: new mongoose.Types.ObjectId(accountId) },
+      { $set: { isDefault: true } },
+      { session }
+    );
 
     await session.commitTransaction();
     return res.status(200).json({ success: true, message: 'Default account updated' });
+
   } catch (error) {
     await session.abortTransaction();
+    console.error("Set Default Error:", error);
 
-    // Partial unique index on { userId, isDefault: true } blocks a second
-    // concurrent request from setting a different account as default
-    // simultaneously — surface as a clear conflict rather than a 500.
     if (error.code === 11000) {
-      return errRes(res, 409, 'Another account was set as default simultaneously — please retry');
+        return res.status(409).json({ success: false, error: 'Concurrent request conflict — please retry' });
     }
-
-    console.error(error);
-    return errRes(res, 500, 'Failed to update default account');
+    
+    return res.status(500).json({ success: false, error: 'Failed to update default account' });
   } finally {
     session.endSession();
   }
 };
-// ─── deleteAccount (Soft Delete) ──────────────────────────────────────────────
-
+// ─── deleteAccount ────────────────────────────────────────────────────────────
 exports.deleteAccount = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
-  
+
   try {
     const userId = req.user.id;
     const { accountId } = req.params;
@@ -218,53 +241,130 @@ exports.deleteAccount = async (req, res) => {
       return errRes(res, 400, 'Invalid accountId');
     }
 
-    // 1. Find the account
-    const account = await Account.findOne(
-      { _id: accountId, userId, status: { $ne: 'CLOSED' } }
-    ).session(session);
+    // Notice we removed the status check here, just in case you want to allow 
+    // permanently deleting an already "CLOSED" account as well.
+    const account = await Account.findOne({ _id: accountId, userId }).session(session);
 
     if (!account) {
       await session.abortTransaction();
-      return errRes(res, 404, 'Account not found or already closed');
+      return errRes(res, 404, 'Account not found');
     }
 
-    // 2. Prevent deletion if the account has funds
     const available = new Decimal(account.availableBalance?.toString() || '0');
     const reserved = new Decimal(account.reservedBalance?.toString() || '0');
 
-    if (available.greaterThan(0) || reserved.greaterThan(0)) {
+    if (!available.equals(0) || !reserved.equals(0)) {
       await session.abortTransaction();
-      return errRes(res, 400, 'Cannot close an account with a non-zero balance. Please transfer or withdraw your funds first.');
+      return errRes(res, 400, 'Cannot delete account with non-zero balance. Clear funds and debts first.');
     }
 
-    // 3. Mark the account as closed
     const wasDefault = account.isDefault;
-    account.status = 'CLOSED';
-    account.isDefault = false; 
-    await account.save({ session });
 
-    // 4. Handle Default Account reassignment
+    // ─── HARD DELETE THE ACCOUNT ───
+    await account.deleteOne({ session });
+
+    // Optional: If you also want to permanently delete all transactions tied to this account
+    // to prevent orphaned data in your database, uncomment the line below:
+    // await Transaction.deleteMany({ accountId: account._id }).session(session);
+
+    // Reassign the default account if the deleted one was the default
     if (wasDefault) {
-      const nextActiveAccount = await Account.findOne(
-        { userId, status: { $ne: 'CLOSED' } }
-      ).session(session);
-
-      if (nextActiveAccount) {
-        nextActiveAccount.isDefault = true;
-        await nextActiveAccount.save({ session });
+      const nextActive = await Account.findOne({ userId, status: { $ne: 'CLOSED' } }).session(session);
+      if (nextActive) {
+        nextActive.isDefault = true;
+        await nextActive.save({ session });
       }
     }
 
     await session.commitTransaction();
-    return res.status(200).json({ 
-      success: true, 
-      message: 'Account successfully closed' 
+    return res.status(200).json({ success: true, message: 'Account permanently deleted' });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error("Delete Account Error:", error);
+    return errRes(res, 500, 'Failed to delete account');
+  } finally {
+    session.endSession();
+  }
+};
+
+// ─── updateAccount ────────────────────────────────────────────────────────────
+exports.updateAccount = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const userId = req.user.id;
+    const { accountId } = req.params;
+    const { name, type, minBalance } = req.body;
+
+    if (!mongoose.Types.ObjectId.isValid(accountId)) {
+      await session.abortTransaction();
+      return errRes(res, 400, 'Invalid accountId');
+    }
+
+    const account = await Account.findOne({
+      _id: accountId,
+      userId,
+      status: { $ne: 'CLOSED' },
+    }).session(session);
+
+    if (!account) {
+      await session.abortTransaction();
+      return errRes(res, 404, 'Account not found or is closed');
+    }
+
+    if (name) {
+      try {
+        account.name = assertString(name, 'Account name', { maxLength: 32 });
+      } catch (err) {
+        await session.abortTransaction();
+        return errRes(res, 400, err.message);
+      }
+    }
+
+    // type is intentionally mutable (not in IMMUTABLE_FIELDS)
+    if (type) {
+      const cleanType = type.toUpperCase();
+      if (!VALID_ACCOUNT_TYPES.has(cleanType)) {
+        await session.abortTransaction();
+        return errRes(res, 400, 'Invalid account type. Must be CASH or BANK');
+      }
+      account.type = cleanType;
+    }
+
+    if (minBalance !== undefined) {
+      try {
+        const parsedMin = new Decimal(minBalance);
+        if (parsedMin.isNaN()) throw new Error();
+        account.minBalance = parsedMin.toFixed(2);
+      } catch {
+        await session.abortTransaction();
+        return errRes(res, 400, 'Invalid minimum balance format');
+      }
+    }
+
+    await account.save({ session });
+
+    await session.commitTransaction();
+    return res.status(200).json({
+      success: true,
+      message: 'Account updated successfully',
+      data: account,
     });
 
   } catch (error) {
     await session.abortTransaction();
-    console.error(error);
-    return errRes(res, 500, 'Failed to close account');
+
+    // 🛑 1. Print the REAL error to your Node.js terminal
+    console.error("🚨 REAL BACKEND ERROR:", error);
+
+    if (error.code === 11000 && error.message.includes('_normalizedName')) {
+      return errRes(res, 409, 'An account with this name already exists');
+    }
+
+    // 🛑 2. Temporarily send the real error message to the Flutter app!
+    return errRes(res, 500, error.message || 'Failed to update account');
+    
   } finally {
     session.endSession();
   }

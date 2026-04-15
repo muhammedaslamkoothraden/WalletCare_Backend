@@ -1,7 +1,7 @@
 'use strict';
 
 const { reconcileUser } = require('../services/reconciliation');
-const User = require('../models/user');
+const { User } = require('../models/user');
 
 // ─── Reconciliation Job ───────────────────────────────────────────────────────
 //
@@ -32,9 +32,9 @@ async function runReconciliationJob() {
 
   console.info(`[ReconciliationJob] Processing ${users.length} users...`);
 
-  let totalAccounts   = 0;
+  let totalAccounts = 0;
   let totalMismatches = 0;
-  let totalErrors     = 0;
+  let totalErrors = 0;
 
   for (const user of users) {
     try {
@@ -49,14 +49,14 @@ async function runReconciliationJob() {
         // fixes it. MISMATCH_LARGE always needs a human to follow up.
         if (r.status !== 'OK') {
           console.warn('[ReconciliationJob] Mismatch detected', {
-            userId:            user._id,
-            accountId:         r.accountId,
-            accountName:       r.accountName,
-            status:            r.status,
-            deltaAvailable:    r.deltaAvailable,
-            deltaReserved:     r.deltaReserved,
-            corrected:         r.corrected,
-            error:             r.error,
+            userId: user._id,
+            accountId: r.accountId,
+            accountName: r.accountName,
+            status: r.status,
+            deltaAvailable: r.deltaAvailable,
+            deltaReserved: r.deltaReserved,
+            corrected: r.corrected,
+            error: r.error,
           });
         }
       }

@@ -7,28 +7,14 @@ const goalSchema = new mongoose.Schema(
       ref: "User",
       required: true
     },
-
     title: {
       type: String,
       required: true,
       trim: true,
     },
-
-    accountId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Account",
-      required: true
-    },
-    transactionType: {
-      type: String,
-      enum: ["expense", "reserved"],
-      default: "expense"
-    },
-    directiontype: {
-      type: String,
-      enum: ["STANDARD", "GOAL_ALLOCATION", "GOAL_DEALLOCATION"],
-      default: "STANDARD"
-    },
+    
+    // 🗑️ REMOVED: accountId, transactionType, and directiontype
+    // Goals are now floating envelopes!
 
     category: {
       type: String,
@@ -39,6 +25,8 @@ const goalSchema = new mongoose.Schema(
         "Education",
         "Emergency",
         "Investment",
+        "Bills",
+        "Business",
         "Other"
       ]
     },
@@ -48,12 +36,7 @@ const goalSchema = new mongoose.Schema(
       required: true,
       min: 1,
     },
-    description: {
-        type: String,
-        trim: true,
-        maxlength: 500
-    },
-
+    
     currentAmount: {
       type: Number,
       default: 0,
@@ -65,29 +48,36 @@ const goalSchema = new mongoose.Schema(
       required: true,
     },
 
+    description: {
+      type: String,
+      trim: true,
+      maxlength: 500
+    },
+
     status: {
       type: String,
       enum: ["active", "completed", "overdue"],
       default: "active",
     },
+    
     reminderFrequency: {
       type: String,
       enum: ["daily", "weekly", "monthly", "none"],
       default: "weekly"
     },
+    
     sharedWith: [
-  {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User"
-  }
-]
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User"
+      }
+    ]
   },
   { timestamps: true }
-
 );
+
+// Excellent indexes! These will keep your queries fast.
 goalSchema.index({ userId: 1, status: 1 });
 goalSchema.index({ userId: 1, targetDate: 1 });
-
-
 
 module.exports = mongoose.models.Goal || mongoose.model("Goal", goalSchema);
