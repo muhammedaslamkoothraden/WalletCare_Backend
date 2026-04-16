@@ -106,6 +106,7 @@ exports.createGoal = async (req, res) => {
     }
 };
 
+
 // ─── 2. DEPOSIT TO GOAL (The Expense) ─────────────────────────────────────────
 
 exports.depositToGoal = async (req, res) => {
@@ -123,9 +124,6 @@ exports.depositToGoal = async (req, res) => {
             const goal = await Goal.findOne({ _id: req.params.id, userId: req.user.id }).session(session);
             if (!goal) throw new Error('Goal not found');
 
-            // 🛠️ Note: We allow deposits even if already 'completed' 
-            // so users can keep adding to their "overflow" savings.
-
             const existingLedger = await Ledger.findOne({ userId: req.user.id, idempotencyKey }).session(session).lean();
             if (existingLedger) {
                 const conflictError = new Error('Duplicate transaction');
@@ -134,23 +132,18 @@ exports.depositToGoal = async (req, res) => {
                 throw conflictError;
             }
 
-            // Deduct from account available balance (throws if insufficient)
+            // Deduct from account available balance
             const account = await updateAvailableBalance(accountId, req.user.id, depositAmount.negated(), session);
 
-            // ─── Update Goal logic ───
+            // Update Goal logic
             const currentAmt = new Decimal(goal.currentAmount.toString());
             const targetAmt = new Decimal(goal.targetAmount.toString());
             const newGoalAmount = currentAmt.plus(depositAmount);
 
-            // 🛠️ CHANGE: No error thrown if newGoalAmount > targetAmt.
-            // We just update the balance.
             goal.currentAmount = newGoalAmount.toNumber();
 
-            // 🛠️ CHANGE: If balance meets OR exceeds target, it is completed.
-            // We use greaterThanOrEqualTo so overflow deposits also set status to completed.
             const isNowAchieved = newGoalAmount.greaterThanOrEqualTo(targetAmt);
 
-            // Only update status if it wasn't already completed
             if (isNowAchieved && goal.status !== 'completed') {
                 goal.status = 'completed';
             }
@@ -171,24 +164,28 @@ exports.depositToGoal = async (req, res) => {
                 transactedAt: tDate,
             }], { session });
 
-            // We notify if this SPECIFIC deposit was the one that pushed it over the finish line
+            // 🎯 This checks if THIS specific deposit pushed it from "active" to "completed"
             const justFinished = isNowAchieved && currentAmt.lessThan(targetAmt);
 
             return { goal, account, ledgerId: ledger._id, justFinished };
         });
 
-        createNotification(
-            req.user.id,
-            `Milestone Reached: Your savings goal '${result.goal.title}' is now fully funded.`,
-            'goal_completed'
-        ).catch(console.warn);
+        // 🔥 THE FIX: We only trigger the notification if it JUST crossed the finish line!
+        if (result.justFinished) {
+            createNotification(
+                req.user.id,
+                `Milestone Reached: Your savings goal '${result.goal.title}' is now fully funded.`,
+                'goal_completed'
+            ).catch(console.warn);
+        }
 
         return res.status(200).json({
             success: true,
             message: 'Deposited successfully',
             txid: result.ledgerId,
             data: result.goal,
-            availableBalance: result.account.availableBalance.toString()
+            availableBalance: result.account.availableBalance.toString(),
+            justFinished: result.justFinished
         });
 
     } catch (error) {
