@@ -15,7 +15,6 @@ const {
 const { initiateTransfer, TransferError } = require('../services/accountTransfer');
 const { computeBalanceDelta, computeReversalDelta } = require('../services/ledgerDelta');
 const { reconcileAccount } = require('../services/reconciliation');
-// CHANGED: import createNotification for dual-channel (socket + FCM) notifications
 const { createNotification } = require('../services/notification.service');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -64,14 +63,22 @@ const VALID_STATUSES = Object.freeze(new Set([
   'PENDING', 'COMPLETED', 'FAILED', 'VOIDED',
 ]));
 
-// CHANGED: define balance notification thresholds as named constants
-const LOW_BALANCE_THRESHOLD = 500;    // fire low-balance alert if available drops below this
-const LARGE_TX_THRESHOLD = 10000;  // fire large-transaction alert if amount >= this
+const LOW_BALANCE_THRESHOLD = 500;
+const LARGE_TX_THRESHOLD = 10000;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function errRes(res, status, message) {
-  return res.status(status).json({ success: false, error: message });
+  // 🔥 FIX: Force the message to always be a plain string before sending it to Flutter
+  let safeMessage = "An unknown error occurred";
+  if (typeof message === 'string') {
+    safeMessage = message;
+  } else if (message && message.message) {
+    safeMessage = message.message;
+  } else if (message) {
+    safeMessage = message.toString();
+  }
+  return res.status(status).json({ success: false, error: safeMessage });
 }
 
 const toDecimal128 = (value) => {
@@ -97,12 +104,7 @@ function reconcileAfterTransaction(accountId, userId) {
       if (result.status === 'OK') return;
       console.warn('[reconcileAfterTransaction] Mismatch detected', {
         accountId: result.accountId,
-        accountName: result.accountName,
         status: result.status,
-        deltaAvailable: result.deltaAvailable,
-        deltaReserved: result.deltaReserved,
-        corrected: result.corrected,
-        error: result.error,
       });
     })
     .catch((err) => {
@@ -110,12 +112,13 @@ function reconcileAfterTransaction(accountId, userId) {
     });
 }
 
+// ─── 1. processTransaction ────────────────────────────────────────────────────
+
 exports.processTransaction = async (req, res, next) => {
   const userId = req.user.id;
-
   let input;
+  
   try {
-    // 0. Input Parsing & Basic Validation
     const missingField = REQUIRED_FIELDS.find((f) => !req.body[f]);
     if (missingField) throw new Error(`${missingField} is required`);
 
@@ -132,9 +135,7 @@ exports.processTransaction = async (req, res, next) => {
       parentTransactionId: req.body.parentTransactionId ?? null,
     };
 
-    if (input.idempotencyKey.length < 8) {
-      throw new StringValidationError('idempotencyKey must be at least 8 characters');
-    }
+    if (input.idempotencyKey.length < 8) throw new StringValidationError('idempotencyKey must be at least 8 characters');
     if (input.transactedAt !== undefined && input.transactedAt !== null) {
       if (isNaN(new Date(req.body.transactedAt).getTime())) throw new Error('transactedAt must be a valid date');
     }
@@ -156,13 +157,22 @@ exports.processTransaction = async (req, res, next) => {
   if (!VALID_TRANSACTION_TYPES.has(transactionType)) return errRes(res, 400, `Invalid transactionType: ${transactionType}`);
 
   const allowedTypes = VALID_DIRECTION_TYPE_COMBINATIONS.get(direction);
-  if (!allowedTypes.has(transactionType)) {
-    return errRes(res, 400, `transactionType '${transactionType}' is not valid for direction '${direction}'. Allowed: ${[...allowedTypes].join(', ')}`);
-  }
-
+  if (!allowedTypes.has(transactionType)) return errRes(res, 400, `transactionType '${transactionType}' is not valid for direction '${direction}'.`);
   if (TRANSFER_DIRECTIONS.has(direction) && !linkedAccountId) return errRes(res, 400, `direction '${direction}' requires linkedAccountId`);
   if (linkedAccountId && accountId.toString() === linkedAccountId.toString()) return errRes(res, 400, 'accountId and linkedAccountId must not be the same account');
   if (direction === 'REVERSAL' && !parentTransactionId) return errRes(res, 400, 'parentTransactionId is required for REVERSAL');
+
+  // 🔥 ANTIGRAVITY FIX: Pre-flight checks OUTSIDE the transaction lock to save 2+ seconds
+  const [existingLedger, preFlightAccount] = await Promise.all([
+    Ledger.findOne({ userId, idempotencyKey }).lean(),
+    Account.findOne({ _id: accountId, userId }).lean()
+  ]);
+
+  if (existingLedger) return duplicateResponse(res, existingLedger, preFlightAccount);
+  if (!preFlightAccount) return errRes(res, 404, 'Account not found');
+  if (preFlightAccount.status === 'CLOSED' || preFlightAccount.status === 'FROZEN') {
+    return errRes(res, 400, `Transactions are not permitted on a ${preFlightAccount.status.toLowerCase()} account`);
+  }
 
   const MAX_RETRIES = 3;
 
@@ -171,23 +181,10 @@ exports.processTransaction = async (req, res, next) => {
     session.startTransaction();
 
     try {
-      // 1. Idempotency Check
-      const existingLedger = await Ledger.findOne({ userId, idempotencyKey }).session(session).lean();
-      if (existingLedger) {
-        const account = await Account.findOne({ _id: existingLedger.accountId, userId }).session(session).lean();
-        await session.abortTransaction();
-        return duplicateResponse(res, existingLedger, account);
-      }
-
-      // 2. Account Validation
       const account = await Account.findOne({ _id: accountId, userId }).session(session);
       if (!account) {
         await session.abortTransaction();
         return errRes(res, 404, 'Account not found');
-      }
-      if (account.status === 'CLOSED' || account.status === 'FROZEN') {
-        await session.abortTransaction();
-        return errRes(res, 400, `Transactions are not permitted on a ${account.status.toLowerCase()} account`);
       }
 
       let parentTx = null;
@@ -210,7 +207,7 @@ exports.processTransaction = async (req, res, next) => {
           return errRes(res, 400, `Reversal amount (${safeAmount}) must match original amount (${parentAmount.toFixed(2)})`);
         }
 
-        // 🎯 NEW: Handle Dual-Leg Transfer Reversals
+        // 🎯 Handle Dual-Leg Transfer Reversals
         if (parentTx.transferGroupId) {
           const transferLegs = await Ledger.find({ transferGroupId: parentTx.transferGroupId, userId }).session(session).lean();
           
@@ -227,30 +224,21 @@ exports.processTransaction = async (req, res, next) => {
           const reversedLedgers = [];
           for (const leg of transferLegs) {
             const legAccount = await Account.findOne({ _id: leg.accountId, userId }).session(session);
-            
             const { balanceChange, reservedChange } = computeReversalDelta(leg.direction, leg.transactionType, leg.amount.toString());
             const newLegAvailable = new Decimal(legAccount.availableBalance.toString()).plus(balanceChange);
             const newLegReserved = new Decimal(legAccount.reservedBalance.toString()).plus(reservedChange);
 
             if (newLegAvailable.isNegative()) {
               await session.abortTransaction();
-              return errRes(res, 400, `Reversing this transfer causes a negative balance in account: ${legAccount.name}`);
+              return errRes(res, 400, `Reversing this causes a negative balance in account: ${legAccount.name}`);
             }
 
             reversedLedgers.push({
-              userId,
-              accountId: leg.accountId,
-              amount: toDecimal128(leg.amount),
-              transactionType: 'REVERSAL',
-              direction: 'REVERSAL',
-              category: 'Refund / Correction',
-              description: `Reversal of Transfer: ${leg._id}`,
-              idempotencyKey: `${idempotencyKey}-${leg.direction}`, 
-              linkedAccountId: leg.linkedAccountId,
-              parentTransactionId: leg._id,
-              status: 'COMPLETED',
-              transferGroupId: leg.transferGroupId, 
-              transactedAt: transactedAt ? new Date(transactedAt) : new Date(),
+              userId, accountId: leg.accountId, amount: toDecimal128(leg.amount),
+              transactionType: 'REVERSAL', direction: 'REVERSAL', category: 'Refund / Correction',
+              description: `Reversal of Transfer: ${leg._id}`, idempotencyKey: `${idempotencyKey}-${leg.direction}`, 
+              linkedAccountId: leg.linkedAccountId, parentTransactionId: leg._id, status: 'COMPLETED',
+              transferGroupId: leg.transferGroupId, transactedAt: transactedAt ? new Date(transactedAt) : new Date(),
               runningBalance: toDecimal128(newLegAvailable)
             });
 
@@ -262,15 +250,10 @@ exports.processTransaction = async (req, res, next) => {
           await Ledger.insertMany(reversedLedgers, { session });
           await session.commitTransaction();
 
-          for (const leg of transferLegs) {
-            reconcileAfterTransaction(leg.accountId.toString(), userId);
-          }
+          for (const leg of transferLegs) reconcileAfterTransaction(leg.accountId.toString(), userId);
 
-          // Return immediately for Transfers
           return res.status(201).json({
-            success: true,
-            message: "Transfer fully reversed",
-            reversedCount: reversedLedgers.length
+            success: true, message: "Transfer fully reversed", reversedCount: reversedLedgers.length
           });
         } 
         
@@ -282,7 +265,7 @@ exports.processTransaction = async (req, res, next) => {
         }
       }
 
-      // 4. Calculate Balance Delta (For Standard/Reserve/Single-Leg Reversals)
+      // 4. Calculate Balance Delta
       const currentAvailable = new Decimal(account.availableBalance.toString());
       let balanceChange;
 
@@ -301,18 +284,10 @@ exports.processTransaction = async (req, res, next) => {
 
       // 5. Save Ledger
       const [newLedger] = await Ledger.create([{
-        userId,
-        accountId,
-        amount: toDecimal128(safeAmount),
-        transactionType,
-        direction,
-        category: safeCategory,
-        description: safeDescription,
-        idempotencyKey,
-        linkedAccountId: linkedAccountId || null,
-        parentTransactionId: parentTransactionId || null,
-        status: 'COMPLETED',
-        transactedAt: transactedAt ? new Date(transactedAt) : new Date(),
+        userId, accountId, amount: toDecimal128(safeAmount), transactionType, direction,
+        category: safeCategory, description: safeDescription, idempotencyKey,
+        linkedAccountId: linkedAccountId || null, parentTransactionId: parentTransactionId || null,
+        status: 'COMPLETED', transactedAt: transactedAt ? new Date(transactedAt) : new Date(),
         runningBalance: toDecimal128(newAvailable),
       }], { session });
 
@@ -323,7 +298,6 @@ exports.processTransaction = async (req, res, next) => {
       // --- 7. GOAL SYNCHRONIZATION BLOCK ---
       if (direction === 'REVERSAL' && parentTx && parentTx.goalId) {
         const goal = await Goal.findOne({ _id: parentTx.goalId, userId }).session(session);
-        
         if (goal) {
           const currentAmt = new Decimal(goal.currentAmount.toString());
           const reversalAmt = new Decimal(safeAmount.toString());
@@ -341,50 +315,32 @@ exports.processTransaction = async (req, res, next) => {
           await goal.save({ session });
         }
       }
-      // ----------------------------------
 
       // 8. Commit & Reconcile
       await session.commitTransaction();
       reconcileAfterTransaction(accountId, userId);
 
-      // 9. Trigger Notifications (Premium Professional Messaging)
+      // 9. 🔥 ANTIGRAVITY FIX: Fire-and-forget Notifications (No await blocks UI)
       const isExpense = transactionType === 'EXPENSE';
       const isTransfer = TRANSFER_DIRECTIONS.has(direction);
       const amountDecimal = new Decimal(safeAmount.toString());
-      
       const minBalance = new Decimal(account.minBalance?.toString() || '0');
       const accountName = account.name || 'Account';
 
       if (isExpense && minBalance.greaterThan(0) && newAvailable.lessThan(minBalance)) {
-        try {
-          await createNotification(
-            userId,
-            `Balance Alert: The available balance in your '${accountName}' account has fallen below your set minimum of ₹${minBalance.toFixed(2)}. Your current balance is ₹${newAvailable.toFixed(2)}.`,
-            'low_balance'
-          );
-        } catch (e) { console.warn('[processTransaction] low_balance notification failed:', e.message); }
-
+        createNotification(userId, `Balance Alert: Your '${accountName}' account is below minimum. Current: ₹${newAvailable.toFixed(2)}.`, 'low_balance')
+          .catch(e => console.warn('Low balance notification failed:', e.message));
       } else if (amountDecimal.greaterThanOrEqualTo(LARGE_TX_THRESHOLD)) {
         const actionWord = isTransfer ? 'transferred' : isExpense ? 'debited' : 'credited';
-        try {
-          await createNotification(
-            userId,
-            `Transaction Alert: A transaction of ₹${amountDecimal.toFixed(2)} was recently ${actionWord} on your '${accountName}' account. Your updated balance is ₹${newAvailable.toFixed(2)}.`,
-            'large_transaction'
-          );
-        } catch (e) { console.warn('[processTransaction] large_transaction notification failed:', e.message); }
+        createNotification(userId, `Transaction Alert: ₹${amountDecimal.toFixed(2)} was ${actionWord} on '${accountName}'.`, 'large_transaction')
+          .catch(e => console.warn('Large transaction notification failed:', e.message));
       }
 
       // 10. Respond
-      return res.status(201).json({
-        success: true,
-        txid: newLedger._id,
-        availableBalance: newAvailable.toFixed(2),
-      });
+      return res.status(201).json({ success: true, txid: newLedger._id, availableBalance: newAvailable.toFixed(2) });
 
     } catch (error) {
       if (session.inTransaction()) await session.abortTransaction().catch(() => { });
-      
       const isVersionError = error.name === 'VersionError';
       const isWriteConflict = error.code === 112 || error.hasErrorLabel?.('TransientTransactionError');
 
@@ -392,7 +348,6 @@ exports.processTransaction = async (req, res, next) => {
         await new Promise(r => setTimeout(r, Math.random() * 50 * attempt));
         continue;
       }
-      
       if (error.code === 11000) return errRes(res, 409, 'Duplicate transaction detected');
       return next(error);
       
@@ -401,6 +356,7 @@ exports.processTransaction = async (req, res, next) => {
     }
   }
 };
+
 // ─── 2. accountTransfer ───────────────────────────────────────────────────────
 
 exports.accountTransfer = async (req, res, next) => {
@@ -411,15 +367,12 @@ exports.accountTransfer = async (req, res, next) => {
     if (missing) throw new Error(`${missing} is required`);
 
     input = {
-      fromAccountId: req.body.fromAccountId,
-      toAccountId: req.body.toAccountId,
-      amount: parseAmount(req.body.amount),
-      category: sanitizeCategory(req.body.category),
+      fromAccountId: req.body.fromAccountId, toAccountId: req.body.toAccountId,
+      amount: parseAmount(req.body.amount), category: sanitizeCategory(req.body.category),
       description: sanitizeOptionalDescription(req.body.description),
       idempotencyKey: assertString(req.body.idempotencyKey, 'idempotencyKey', { maxLength: 128 }),
       transactedAt: req.body.transactedAt,
     };
-
     if (input.idempotencyKey.length < 8) throw new StringValidationError('idempotencyKey must be at least 8 characters');
   } catch (error) {
     return errRes(res, 400, error.message);
@@ -508,6 +461,8 @@ exports.getHistory = async (req, res, next) => {
       nextCursor: history.length === parsedLimit ? history.at(-1)._id : null,
       data: history.map((tx) => ({
         ...tx,
+        // 🔥 FIX: Flatten the accountId object into a pure string so Flutter doesn't crash
+        accountId: tx.accountId?._id ? tx.accountId._id.toString() : tx.accountId?.toString(), 
         amount: tx.amount.toString(),
         accountName: tx.accountId?.name || 'Unknown Account',
       })),
@@ -567,7 +522,6 @@ exports.voidTransaction = async (req, res, next) => {
       account.reservedBalance = toDecimal128(newReserved);
       await account.save({ session });
 
-      // Sync Goal Balance during Void
       if (ledger.goalId) {
         const goal = await Goal.findOne({ _id: ledger.goalId, userId }).session(session);
         if (goal) {
@@ -645,6 +599,8 @@ exports.getLatestTransactions = async (req, res, next) => {
       count: latestTransactions.length,
       data: latestTransactions.map((tx) => ({
         ...tx,
+        // 🔥 FIX: Flatten the accountId object into a pure string so Flutter doesn't crash
+        accountId: tx.accountId?._id ? tx.accountId._id.toString() : tx.accountId?.toString(),
         amount: tx.amount.toString(),
         accountName: tx.accountId?.name || 'Unknown Account',
       })),
@@ -655,30 +611,27 @@ exports.getLatestTransactions = async (req, res, next) => {
   }
 }
 
+// ─── 6. reserveFunds ───────────────────────────────────────────────────────────
+
 exports.reserveFunds = async (req, res, next) => {
   const userId = req.user.id;
   let input;
 
   try {
-    // action must be explicitly 'RESERVE' (move to reserved) or 'RELEASE' (move to available)
     const missing = ['accountId', 'amount', 'action', 'idempotencyKey'].find((f) => !req.body[f]);
     if (missing) throw new Error(`${missing} is required`);
 
     input = {
       accountId: req.body.accountId,
-      amount: parseAmount(req.body.amount), // Assuming this handles strict parsing
+      amount: parseAmount(req.body.amount), 
       action: req.body.action.toUpperCase(),
       category: sanitizeCategory(req.body.category || 'System Reserve'),
       description: sanitizeOptionalDescription(req.body.description),
       idempotencyKey: assertString(req.body.idempotencyKey, 'idempotencyKey', { maxLength: 128 }),
     };
 
-    if (input.idempotencyKey.length < 8) {
-      throw new StringValidationError('idempotencyKey must be at least 8 characters');
-    }
-    if (!['RESERVE', 'RELEASE'].includes(input.action)) {
-      throw new Error("action must be exactly 'RESERVE' or 'RELEASE'");
-    }
+    if (input.idempotencyKey.length < 8) throw new StringValidationError('idempotencyKey must be at least 8 characters');
+    if (!['RESERVE', 'RELEASE'].includes(input.action)) throw new Error("action must be exactly 'RESERVE' or 'RELEASE'");
   } catch (error) {
     return errRes(res, 400, error.message);
   }
@@ -687,6 +640,18 @@ exports.reserveFunds = async (req, res, next) => {
 
   if (!mongoose.Types.ObjectId.isValid(accountId)) return errRes(res, 400, 'Invalid accountId');
 
+  // 🔥 ANTIGRAVITY FIX: Pre-flight checks OUTSIDE the transaction lock to save 2+ seconds
+  const [existingLedger, preFlightAccount] = await Promise.all([
+    Ledger.findOne({ userId, idempotencyKey }).lean(),
+    Account.findOne({ _id: accountId, userId }).lean()
+  ]);
+
+  if (existingLedger) return duplicateResponse(res, existingLedger, preFlightAccount);
+  if (!preFlightAccount) return errRes(res, 404, 'Account not found');
+  if (preFlightAccount.status === 'CLOSED' || preFlightAccount.status === 'FROZEN') {
+    return errRes(res, 400, `Cannot modify reserves on a ${preFlightAccount.status.toLowerCase()} account`);
+  }
+
   const MAX_RETRIES = 3;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -694,26 +659,8 @@ exports.reserveFunds = async (req, res, next) => {
     session.startTransaction();
 
     try {
-      // ── 1. Idempotency Check ─────────────────────────────────────────────────
-      const existingLedger = await Ledger.findOne({ userId, idempotencyKey }).session(session).lean();
-      if (existingLedger) {
-        const account = await Account.findOne({ _id: existingLedger.accountId, userId }).session(session).lean();
-        await session.abortTransaction();
-        return duplicateResponse(res, existingLedger, account);
-      }
-
-      // ── 2. Account Validation ────────────────────────────────────────────────
       const account = await Account.findOne({ _id: accountId, userId }).session(session);
-      if (!account) {
-        await session.abortTransaction();
-        return errRes(res, 404, 'Account not found');
-      }
-      if (account.status === 'CLOSED' || account.status === 'FROZEN') {
-        await session.abortTransaction();
-        return errRes(res, 400, `Cannot modify reserves on a ${account.status.toLowerCase()} account`);
-      }
-
-      // ── 3. Exact Math Calculation ────────────────────────────────────────────
+      
       const currentAvailable = new Decimal(account.availableBalance.toString());
       const currentReserved = new Decimal(account.reservedBalance.toString());
       const moveAmount = new Decimal(safeAmount.toString());
@@ -721,56 +668,39 @@ exports.reserveFunds = async (req, res, next) => {
       let newAvailable, newReserved, direction;
 
       if (action === 'RESERVE') {
-        direction = 'RESERVED_IN'; // Funds going IN to the reserve
+        direction = 'RESERVED_IN'; 
         newAvailable = currentAvailable.minus(moveAmount);
         newReserved = currentReserved.plus(moveAmount);
-
         if (newAvailable.isNegative()) {
           await session.abortTransaction();
           return errRes(res, 400, `Insufficient available balance to reserve ₹${moveAmount.toFixed(2)}`);
         }
       } else {
-        direction = 'RESERVED_OUT'; // Funds coming OUT of the reserve
+        direction = 'RESERVED_OUT'; 
         newAvailable = currentAvailable.plus(moveAmount);
         newReserved = currentReserved.minus(moveAmount);
-
         if (newReserved.isNegative()) {
           await session.abortTransaction();
           return errRes(res, 400, `Insufficient reserved balance to release ₹${moveAmount.toFixed(2)}`);
         }
       }
 
-      // ── 4. Write Ledger Entry ────────────────────────────────────────────────
       const [newLedger] = await Ledger.create([{
-        userId,
-        accountId,
-        amount: toDecimal128(safeAmount),
-        transactionType: 'TRANSFER', // It is an intra-account transfer
-        direction,
-        category: safeCategory,
-        description: safeDescription,
-        idempotencyKey,
-        status: 'COMPLETED',
-        transactedAt: new Date(),
-        runningBalance: toDecimal128(newAvailable), // Track the new available balance
+        userId, accountId, amount: toDecimal128(safeAmount), transactionType: 'TRANSFER', direction,
+        category: safeCategory, description: safeDescription, idempotencyKey, status: 'COMPLETED',
+        transactedAt: new Date(), runningBalance: toDecimal128(newAvailable),
       }], { session });
 
-      // ── 5. Update Account Balances ───────────────────────────────────────────
       account.availableBalance = toDecimal128(newAvailable);
       account.reservedBalance = toDecimal128(newReserved);
       await account.save({ session });
 
       await session.commitTransaction();
-      
-      // Fire reconciliation silently in background
       reconcileAfterTransaction(accountId, userId);
 
       return res.status(201).json({
-        success: true,
-        action,
-        txid: newLedger._id,
-        availableBalance: newAvailable.toFixed(2),
-        reservedBalance: newReserved.toFixed(2),
+        success: true, action, txid: newLedger._id,
+        availableBalance: newAvailable.toFixed(2), reservedBalance: newReserved.toFixed(2),
       });
 
     } catch (error) {
