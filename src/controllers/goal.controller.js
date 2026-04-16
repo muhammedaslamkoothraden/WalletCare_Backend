@@ -150,7 +150,7 @@ exports.depositToGoal = async (req, res) => {
 
             await goal.save({ session });
 
-            const [ledger] = await Ledger.create([{
+           const [ledger] = await Ledger.create([{
                 userId: req.user.id,
                 accountId: account._id,
                 goalId: goal._id,
@@ -162,6 +162,8 @@ exports.depositToGoal = async (req, res) => {
                 status: 'COMPLETED',
                 idempotencyKey,
                 transactedAt: tDate,
+                // 🎯 ADD THIS LINE:
+                runningBalance: mongoose.Types.Decimal128.fromString(account.availableBalance.toString())
             }], { session });
 
             // 🎯 This checks if THIS specific deposit pushed it from "active" to "completed"
@@ -236,7 +238,7 @@ exports.withdrawFromGoal = async (req, res) => {
             if (goal.currentAmount < goal.targetAmount) goal.status = 'active';
             await goal.save({ session });
 
-            const [ledger] = await Ledger.create([{
+          const [ledger] = await Ledger.create([{
                 userId: req.user.id,
                 accountId: account._id,
                 goalId: goal._id,
@@ -248,6 +250,7 @@ exports.withdrawFromGoal = async (req, res) => {
                 status: 'COMPLETED',
                 idempotencyKey,
                 transactedAt: tDate,
+                runningBalance: mongoose.Types.Decimal128.fromString(account.availableBalance.toString())
             }], { session });
 
             return { goal, account, ledgerId: ledger._id };
