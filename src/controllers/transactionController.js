@@ -455,16 +455,22 @@ exports.getHistory = async (req, res, next) => {
       .limit(parsedLimit)
       .lean();
 
-    return res.status(200).json({
+  return res.status(200).json({
       success: true,
       count: history.length,
       nextCursor: history.length === parsedLimit ? history.at(-1)._id : null,
       data: history.map((tx) => ({
         ...tx,
-        // 🔥 FIX: Flatten the accountId object into a pure string so Flutter doesn't crash
+        // 1. Flatten IDs and Names
         accountId: tx.accountId?._id ? tx.accountId._id.toString() : tx.accountId?.toString(), 
-        amount: tx.amount.toString(),
         accountName: tx.accountId?.name || 'Unknown Account',
+        
+        // 2. Convert ALL Decimals to Strings (Crucial for Flutter)
+        amount: tx.amount ? tx.amount.toString() : "0.00",
+        runningBalance: tx.runningBalance ? tx.runningBalance.toString() : "0.00",
+        
+        // 3. Handle linkedAccountId if it exists
+        linkedAccountId: tx.linkedAccountId ? tx.linkedAccountId.toString() : null,
       })),
     });
   } catch (error) {
@@ -594,15 +600,22 @@ exports.getLatestTransactions = async (req, res, next) => {
       .limit(5)
       .lean();
 
-    return res.status(200).json({
+   return res.status(200).json({
       success: true,
-      count: latestTransactions.length,
-      data: latestTransactions.map((tx) => ({
+      count: history.length,
+      nextCursor: history.length === parsedLimit ? history.at(-1)._id : null,
+      data: history.map((tx) => ({
         ...tx,
-        // 🔥 FIX: Flatten the accountId object into a pure string so Flutter doesn't crash
-        accountId: tx.accountId?._id ? tx.accountId._id.toString() : tx.accountId?.toString(),
-        amount: tx.amount.toString(),
+        // 1. Flatten IDs and Names
+        accountId: tx.accountId?._id ? tx.accountId._id.toString() : tx.accountId?.toString(), 
         accountName: tx.accountId?.name || 'Unknown Account',
+        
+        // 2. Convert ALL Decimals to Strings (Crucial for Flutter)
+        amount: tx.amount ? tx.amount.toString() : "0.00",
+        runningBalance: tx.runningBalance ? tx.runningBalance.toString() : "0.00",
+        
+        // 3. Handle linkedAccountId if it exists
+        linkedAccountId: tx.linkedAccountId ? tx.linkedAccountId.toString() : null,
       })),
     });
   } catch (error) {
