@@ -575,9 +575,13 @@ exports.getLatestTransactions = async (req, res, next) => {
   try {
     const userId = req.user.id;
 
-    const reversals = await Ledger.find({ userId, direction: 'REVERSAL' })
-      .select('_id parentTransactionId')
-      .lean();
+    // 1. Identify Reversals to exclude them from the "Latest" list
+    const reversals = await Ledger.find({ 
+      userId, 
+      direction: 'REVERSAL' 
+    })
+    .select('_id parentTransactionId')
+    .lean();
 
     const excludedIds = new Set();
     for (const r of reversals) {
@@ -585,6 +589,7 @@ exports.getLatestTransactions = async (req, res, next) => {
       if (r.parentTransactionId) excludedIds.add(r.parentTransactionId.toString());
     }
 
+    // 2. Build the query
     const query = {
       userId: new mongoose.Types.ObjectId(userId),
       status: 'COMPLETED',
@@ -594,35 +599,45 @@ exports.getLatestTransactions = async (req, res, next) => {
       query._id = { $nin: [...excludedIds].map((id) => new mongoose.Types.ObjectId(id)) };
     }
 
+    // 3. Fetch the latest 5 records
     const latestTransactions = await Ledger.find(query)
       .populate('accountId', 'name')
-      .sort({ createdAt: -1 })
+      .sort({ transactedAt: -1, _id: -1 }) // Sort by transaction date, then ID
       .limit(5)
       .lean();
 
-   return res.status(200).json({
+    // 4. Return formatted data
+    return res.status(200).json({
       success: true,
-      count: history.length,
-      nextCursor: history.length === parsedLimit ? history.at(-1)._id : null,
-      data: history.map((tx) => ({
+      count: latestTransactions.length,
+      data: latestTransactions.map((tx) => ({
         ...tx,
-        // 1. Flatten IDs and Names
+        _id: tx._id.toString(),
+        
+        // 🎯 Flatten Account Details
         accountId: tx.accountId?._id ? tx.accountId._id.toString() : tx.accountId?.toString(), 
         accountName: tx.accountId?.name || 'Unknown Account',
         
-        // 2. Convert ALL Decimals to Strings (Crucial for Flutter)
+        // 🎯 Convert ALL Decimals to Strings for Flutter/Dart Compatibility
         amount: tx.amount ? tx.amount.toString() : "0.00",
         runningBalance: tx.runningBalance ? tx.runningBalance.toString() : "0.00",
         
-        // 3. Handle linkedAccountId if it exists
+        // 🎯 Handle Optional References
         linkedAccountId: tx.linkedAccountId ? tx.linkedAccountId.toString() : null,
+        parentTransactionId: tx.parentTransactionId ? tx.parentTransactionId.toString() : null,
+        goalId: tx.goalId ? tx.goalId.toString() : null
       })),
     });
+
   } catch (error) {
     console.error('[getLatestTransactions] Error:', error);
-    return res.status(500).json({ success: false, error: 'Failed to fetch latest transactions' });
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch latest transactions',
+      error: error.message 
+    });
   }
-}
+};
 
 // ─── 6. reserveFunds ───────────────────────────────────────────────────────────
 
