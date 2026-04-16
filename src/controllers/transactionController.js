@@ -37,6 +37,8 @@ const VALID_DIRECTIONS = Object.freeze(new Set([
   'ACCOUNT_TRANSFER_IN',
   'ACCOUNT_TRANSFER_OUT',
   'REVERSAL',
+  'RESERVED_IN', 
+  'RESERVED_OUT'
 ]));
 
 const VALID_DIRECTION_TYPE_COMBINATIONS = Object.freeze(
@@ -48,6 +50,8 @@ const VALID_DIRECTION_TYPE_COMBINATIONS = Object.freeze(
     ['ACCOUNT_TRANSFER_OUT', Object.freeze(new Set(['TRANSFER']))],
     ['ACCOUNT_TRANSFER_IN', Object.freeze(new Set(['TRANSFER']))],
     ['REVERSAL', Object.freeze(new Set(['REVERSAL']))],
+    ['RESERVED_IN', Object.freeze(new Set(['TRANSFER']))],
+    ['RESERVED_OUT', Object.freeze(new Set(['TRANSFER']))],
   ])
 );
 
@@ -188,9 +192,9 @@ exports.processTransaction = async (req, res, next) => {
 
       let parentTx = null;
 
-      // 3. Reversal Validation
+      // ── 3. Reversal Validation & Multi-Leg Processing ──────────────────────
       if (direction === 'REVERSAL') {
-        parentTx = await Ledger.findOne({ _id: parentTransactionId, userId, accountId }).session(session).lean();
+        parentTx = await Ledger.findOne({ _id: parentTransactionId, userId }).session(session).lean();
         if (!parentTx) {
           await session.abortTransaction();
           return errRes(res, 404, 'Parent transaction not found');
@@ -206,6 +210,71 @@ exports.processTransaction = async (req, res, next) => {
           return errRes(res, 400, `Reversal amount (${safeAmount}) must match original amount (${parentAmount.toFixed(2)})`);
         }
 
+        // 🎯 NEW: Handle Dual-Leg Transfer Reversals
+        if (parentTx.transferGroupId) {
+          const transferLegs = await Ledger.find({ transferGroupId: parentTx.transferGroupId, userId }).session(session).lean();
+          
+          const alreadyReversed = await Ledger.findOne({ 
+            parentTransactionId: { $in: transferLegs.map(l => l._id) }, 
+            direction: 'REVERSAL', userId 
+          }).session(session).lean();
+          
+          if (alreadyReversed) {
+            await session.abortTransaction();
+            return errRes(res, 409, 'This transfer has already been reversed');
+          }
+
+          const reversedLedgers = [];
+          for (const leg of transferLegs) {
+            const legAccount = await Account.findOne({ _id: leg.accountId, userId }).session(session);
+            
+            const { balanceChange, reservedChange } = computeReversalDelta(leg.direction, leg.transactionType, leg.amount.toString());
+            const newLegAvailable = new Decimal(legAccount.availableBalance.toString()).plus(balanceChange);
+            const newLegReserved = new Decimal(legAccount.reservedBalance.toString()).plus(reservedChange);
+
+            if (newLegAvailable.isNegative()) {
+              await session.abortTransaction();
+              return errRes(res, 400, `Reversing this transfer causes a negative balance in account: ${legAccount.name}`);
+            }
+
+            reversedLedgers.push({
+              userId,
+              accountId: leg.accountId,
+              amount: toDecimal128(leg.amount),
+              transactionType: 'REVERSAL',
+              direction: 'REVERSAL',
+              category: 'Refund / Correction',
+              description: `Reversal of Transfer: ${leg._id}`,
+              idempotencyKey: `${idempotencyKey}-${leg.direction}`, 
+              linkedAccountId: leg.linkedAccountId,
+              parentTransactionId: leg._id,
+              status: 'COMPLETED',
+              transferGroupId: leg.transferGroupId, 
+              transactedAt: transactedAt ? new Date(transactedAt) : new Date(),
+              runningBalance: toDecimal128(newLegAvailable)
+            });
+
+            legAccount.availableBalance = toDecimal128(newLegAvailable);
+            legAccount.reservedBalance = toDecimal128(newLegReserved);
+            await legAccount.save({ session });
+          }
+
+          await Ledger.insertMany(reversedLedgers, { session });
+          await session.commitTransaction();
+
+          for (const leg of transferLegs) {
+            reconcileAfterTransaction(leg.accountId.toString(), userId);
+          }
+
+          // Return immediately for Transfers
+          return res.status(201).json({
+            success: true,
+            message: "Transfer fully reversed",
+            reversedCount: reversedLedgers.length
+          });
+        } 
+        
+        // --- Standard Single-Leg Reversal Fallback ---
         const alreadyReversed = await Ledger.findOne({ parentTransactionId, direction: 'REVERSAL', userId }).session(session).lean();
         if (alreadyReversed) {
           await session.abortTransaction();
@@ -213,7 +282,7 @@ exports.processTransaction = async (req, res, next) => {
         }
       }
 
-      // 4. Calculate Balance Delta
+      // 4. Calculate Balance Delta (For Standard/Reserve/Single-Leg Reversals)
       const currentAvailable = new Decimal(account.availableBalance.toString());
       let balanceChange;
 
@@ -261,26 +330,14 @@ exports.processTransaction = async (req, res, next) => {
           const targetAmt = new Decimal(goal.targetAmount.toString());
 
           if (parentTx.direction === 'GOAL_ALLOCATION') {
-            // Reversing a deposit: subtract the amount from the goal
             const newAmt = currentAmt.minus(reversalAmt);
             goal.currentAmount = newAmt.toNumber();
-            
-            // If the goal drops below target, make it active again
-            if (newAmt.lessThan(targetAmt)) {
-                goal.status = 'active';
-            }
+            if (newAmt.lessThan(targetAmt)) goal.status = 'active';
           } else if (parentTx.direction === 'GOAL_DEALLOCATION') {
-            // Reversing a withdrawal: add the amount back to the goal
             const newAmt = currentAmt.plus(reversalAmt);
             goal.currentAmount = newAmt.toNumber();
-            
-            // If the goal hits the target again, mark as completed
-            if (newAmt.greaterThanOrEqualTo(targetAmt)) {
-                goal.status = 'completed';
-            }
+            if (newAmt.greaterThanOrEqualTo(targetAmt)) goal.status = 'completed';
           }
-          
-          // Save the goal within the same database transaction
           await goal.save({ session });
         }
       }
@@ -295,11 +352,9 @@ exports.processTransaction = async (req, res, next) => {
       const isTransfer = TRANSFER_DIRECTIONS.has(direction);
       const amountDecimal = new Decimal(safeAmount.toString());
       
-      // Parse the specific account's minBalance (defaults to 0 if not set)
       const minBalance = new Decimal(account.minBalance?.toString() || '0');
       const accountName = account.name || 'Account';
 
-      // Trigger if a target minimum is set (> 0) and the balance falls below it
       if (isExpense && minBalance.greaterThan(0) && newAvailable.lessThan(minBalance)) {
         try {
           await createNotification(
@@ -333,7 +388,6 @@ exports.processTransaction = async (req, res, next) => {
       const isVersionError = error.name === 'VersionError';
       const isWriteConflict = error.code === 112 || error.hasErrorLabel?.('TransientTransactionError');
 
-      // Retry mechanism for transient MongoDB errors
       if ((isVersionError || isWriteConflict) && attempt < MAX_RETRIES) {
         await new Promise(r => setTimeout(r, Math.random() * 50 * attempt));
         continue;

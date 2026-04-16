@@ -33,9 +33,11 @@ function computeBalanceDelta(direction, transactionType, rawAmount) {
     }
 
     case 'GOAL_ALLOCATION':
+    case 'RESERVED_IN': // 🎯 ADDED: Moving funds FROM Available TO Reserved
       return { balanceChange: amount.negated(), reservedChange: amount };
 
     case 'GOAL_DEALLOCATION':
+    case 'RESERVED_OUT': // 🎯 ADDED: Moving funds FROM Reserved TO Available
       return { balanceChange: amount, reservedChange: amount.negated() };
 
     case 'GOAL_COMPLETION':
@@ -71,4 +73,3 @@ module.exports = {
   computeUndoDelta,
   computeReversalDelta,
 };
-
