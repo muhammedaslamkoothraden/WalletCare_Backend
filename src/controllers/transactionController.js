@@ -162,7 +162,7 @@ exports.processTransaction = async (req, res, next) => {
   if (linkedAccountId && accountId.toString() === linkedAccountId.toString()) return errRes(res, 400, 'accountId and linkedAccountId must not be the same account');
   if (direction === 'REVERSAL' && !parentTransactionId) return errRes(res, 400, 'parentTransactionId is required for REVERSAL');
 
-  // 🔥 ANTIGRAVITY FIX: Pre-flight checks OUTSIDE the transaction lock to save 2+ seconds
+  // Pre-flight checks outside the transaction lock
   const [existingLedger, preFlightAccount] = await Promise.all([
     Ledger.findOne({ userId, idempotencyKey }).lean(),
     Account.findOne({ _id: accountId, userId }).lean()
@@ -207,6 +207,16 @@ exports.processTransaction = async (req, res, next) => {
           return errRes(res, 400, `Reversal amount (${safeAmount}) must match original amount (${parentAmount.toFixed(2)})`);
         }
 
+        const latestParentTx = await Ledger.findOne({ accountId: parentTx.accountId, userId })
+          .sort({ createdAt: -1, _id: -1 })
+          .session(session)
+          .lean();
+
+        if (latestParentTx && latestParentTx._id.toString() !== parentTransactionId.toString()) {
+          await session.abortTransaction();
+          return errRes(res, 400, 'Only the most recent transaction on the account can be reversed');
+        }
+
         // 🎯 Handle Dual-Leg Transfer Reversals
         if (parentTx.transferGroupId) {
           const transferLegs = await Ledger.find({ transferGroupId: parentTx.transferGroupId, userId }).session(session).lean();
@@ -223,6 +233,19 @@ exports.processTransaction = async (req, res, next) => {
 
           const reversedLedgers = [];
           for (const leg of transferLegs) {
+            
+            if (leg._id.toString() !== parentTransactionId.toString()) {
+              const latestLegTx = await Ledger.findOne({ accountId: leg.accountId, userId })
+                .sort({ createdAt: -1, _id: -1 })
+                .session(session)
+                .lean();
+
+              if (latestLegTx && latestLegTx._id.toString() !== leg._id.toString()) {
+                await session.abortTransaction();
+                return errRes(res, 400, `Cannot reverse transfer: A newer transaction exists on the linked account`);
+              }
+            }
+
             const legAccount = await Account.findOne({ _id: leg.accountId, userId }).session(session);
             const { balanceChange, reservedChange } = computeReversalDelta(leg.direction, leg.transactionType, leg.amount.toString());
             const newLegAvailable = new Decimal(legAccount.availableBalance.toString()).plus(balanceChange);
@@ -320,7 +343,7 @@ exports.processTransaction = async (req, res, next) => {
       await session.commitTransaction();
       reconcileAfterTransaction(accountId, userId);
 
-      // 9. 🔥 ANTIGRAVITY FIX: Fire-and-forget Notifications (No await blocks UI)
+      // 9. Fire-and-forget Notifications
       const isExpense = transactionType === 'EXPENSE';
       const isTransfer = TRANSFER_DIRECTIONS.has(direction);
       const amountDecimal = new Decimal(safeAmount.toString());
@@ -356,7 +379,6 @@ exports.processTransaction = async (req, res, next) => {
     }
   }
 };
-
 // ─── 2. accountTransfer ───────────────────────────────────────────────────────
 
 exports.accountTransfer = async (req, res, next) => {
@@ -455,24 +477,30 @@ exports.getHistory = async (req, res, next) => {
       .limit(parsedLimit)
       .lean();
 
-  return res.status(200).json({
-      success: true,
-      count: history.length,
-      nextCursor: history.length === parsedLimit ? history.at(-1)._id : null,
-      data: history.map((tx) => ({
-        ...tx,
-        // 1. Flatten IDs and Names
-        accountId: tx.accountId?._id ? tx.accountId._id.toString() : tx.accountId?.toString(), 
-        accountName: tx.accountId?.name || 'Unknown Account',
-        
-        // 2. Convert ALL Decimals to Strings (Crucial for Flutter)
-        amount: tx.amount ? tx.amount.toString() : "0.00",
-        runningBalance: tx.runningBalance ? tx.runningBalance.toString() : "0.00",
-        
-        // 3. Handle linkedAccountId if it exists
-        linkedAccountId: tx.linkedAccountId ? tx.linkedAccountId.toString() : null,
-      })),
-    });
+return res.status(200).json({
+  success: true,
+  count: history.length,
+  data: history.map((tx) => ({
+    _id: tx._id.toString(),
+    userId: tx.userId.toString(),
+    accountId: tx.accountId?._id ? tx.accountId._id.toString() : tx.accountId?.toString(),
+    accountName: tx.accountId?.name || 'Unknown Account',
+    amount: tx.amount ? tx.amount.toString() : "0.00",
+    runningBalance: tx.runningBalance ? tx.runningBalance.toString() : "0.00",
+    transactionType: tx.transactionType,
+    direction: tx.direction,
+    category: tx.category,
+    description: tx.description ?? null,
+    status: tx.status,
+    idempotencyKey: tx.idempotencyKey,
+    linkedAccountId: tx.linkedAccountId ? tx.linkedAccountId.toString() : null,
+    parentTransactionId: tx.parentTransactionId ? tx.parentTransactionId.toString() : null,
+    goalId: tx.goalId ? tx.goalId.toString() : null,
+    transferGroupId: tx.transferGroupId ? tx.transferGroupId.toString() : null,
+    transactedAt: tx.transactedAt,
+    createdAt: tx.createdAt,
+  })),
+});
   } catch (error) {
     next(error);
   }
@@ -607,28 +635,30 @@ exports.getLatestTransactions = async (req, res, next) => {
       .lean();
 
     // 4. Return formatted data
-    return res.status(200).json({
-      success: true,
-      count: latestTransactions.length,
-      data: latestTransactions.map((tx) => ({
-        ...tx,
-        _id: tx._id.toString(),
-        
-        // 🎯 Flatten Account Details
-        accountId: tx.accountId?._id ? tx.accountId._id.toString() : tx.accountId?.toString(), 
-        accountName: tx.accountId?.name || 'Unknown Account',
-        
-        // 🎯 Convert ALL Decimals to Strings for Flutter/Dart Compatibility
-        amount: tx.amount ? tx.amount.toString() : "0.00",
-        runningBalance: tx.runningBalance ? tx.runningBalance.toString() : "0.00",
-        
-        // 🎯 Handle Optional References
-        linkedAccountId: tx.linkedAccountId ? tx.linkedAccountId.toString() : null,
-        parentTransactionId: tx.parentTransactionId ? tx.parentTransactionId.toString() : null,
-        goalId: tx.goalId ? tx.goalId.toString() : null
-      })),
-    });
-
+return res.status(200).json({
+  success: true,
+  count: latestTransactions.length,
+  data: latestTransactions.map((tx) => ({
+    _id: tx._id.toString(),
+    userId: tx.userId.toString(),
+    accountId: tx.accountId?._id ? tx.accountId._id.toString() : tx.accountId?.toString(),
+    accountName: tx.accountId?.name || 'Unknown Account',
+    amount: tx.amount ? tx.amount.toString() : "0.00",
+    runningBalance: tx.runningBalance ? tx.runningBalance.toString() : "0.00",
+    transactionType: tx.transactionType,
+    direction: tx.direction,
+    category: tx.category,
+    description: tx.description ?? null,
+    status: tx.status,
+    idempotencyKey: tx.idempotencyKey,
+    linkedAccountId: tx.linkedAccountId ? tx.linkedAccountId.toString() : null,
+    parentTransactionId: tx.parentTransactionId ? tx.parentTransactionId.toString() : null,
+    goalId: tx.goalId ? tx.goalId.toString() : null,
+    transferGroupId: tx.transferGroupId ? tx.transferGroupId.toString() : null,
+    transactedAt: tx.transactedAt,
+    createdAt: tx.createdAt,
+  })),
+});
   } catch (error) {
     console.error('[getLatestTransactions] Error:', error);
     return res.status(500).json({ 
