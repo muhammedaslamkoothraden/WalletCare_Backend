@@ -29,11 +29,6 @@ const protect = async (req, res, next) => {
       return res.status(403).json({ success: false, message: "Your account has been suspended" });
     }
 
-    // Block admin from user routes
-    if (user.role === "admin") {
-      return res.status(403).json({ success: false, message: "Access denied" });
-    }
-
     req.user = user;
     next();
 
