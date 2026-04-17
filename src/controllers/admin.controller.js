@@ -1,5 +1,8 @@
 const { User } = require("../models/user");
 const Feedback = require("../models/Feedback");
+const bcrypt = require("bcryptjs");
+const { generateAccessToken, generateRefreshToken } = require("../utils/token");
+const hashToken = require("../utils/hashToken");
 
 // GET /api/admin/stats
 const getStats = async (req, res) => {
@@ -25,6 +28,112 @@ const getStats = async (req, res) => {
         scheduledForDeletion,
       },
     });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+// GET /api/admin/profile
+const getAdminProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select("-password -refreshToken");
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: "Admin not found" });
+    }
+
+    return res.status(200).json({ success: true, data: user });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+// PATCH /api/admin/profile
+const updateAdminProfile = async (req, res) => {
+  try {
+    const { name, email } = req.body;
+
+    const updates = {};
+    if (name && name.trim()) updates.name = name.trim();
+    if (email && email.trim()) updates.email = email.trim().toLowerCase();
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ success: false, message: "Nothing to update" });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      updates,
+      { new: true, runValidators: true }
+    ).select("-password -refreshToken");
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: "Admin not found" });
+    }
+
+    return res.status(200).json({ success: true, message: "Profile updated successfully", data: user });
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ success: false, message: "Email already in use" });
+    }
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+// PATCH /api/admin/change-password
+const changeAdminPassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, message: "Current and new password are required" });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ success: false, message: "Password must be at least 8 characters" });
+    }
+
+    const user = await User.findById(req.user._id).select("+password");
+    if (!user) {
+      return res.status(404).json({ success: false, message: "Admin not found" });
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ success: false, message: "Current password is incorrect" });
+    }
+
+    const isSame = await bcrypt.compare(newPassword, user.password);
+    if (isSame) {
+      return res.status(400).json({ success: false, message: "New password must be different from current password" });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    const accessToken  = generateAccessToken(user._id, user.role);
+    const refreshToken = generateRefreshToken(user._id);
+
+    await User.findByIdAndUpdate(req.user._id, {
+      password:     hashedPassword,
+      refreshToken: hashToken(refreshToken),
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Password changed successfully.",
+      accessToken,
+      refreshToken,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+// POST /api/admin/logout-all
+const logoutAllAdminSessions = async (req, res) => {
+  try {
+    await User.findByIdAndUpdate(req.user._id, { refreshToken: null });
+    return res.status(200).json({ success: true, message: "All sessions invalidated successfully" });
   } catch (error) {
     return res.status(500).json({ success: false, message: "Server error" });
   }
@@ -184,7 +293,6 @@ const getUserAnalytics = async (req, res) => {
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-    // Monthly user registrations (last 6 months)
     const userGrowth = await User.aggregate([
       {
         $match: {
@@ -201,7 +309,6 @@ const getUserAnalytics = async (req, res) => {
       { $sort: { "_id.year": 1, "_id.month": 1 } },
     ]);
 
-    // Premium vs Free users
     const premiumUsers = await User.countDocuments({ role: "user", isPremium: true });
     const freeUsers = await User.countDocuments({ role: "user", isPremium: false });
 
@@ -223,7 +330,6 @@ const getFeedbackAnalytics = async (req, res) => {
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-    // Total feedbacks this month
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
@@ -231,13 +337,11 @@ const getFeedbackAnalytics = async (req, res) => {
       createdAt: { $gte: startOfMonth },
     });
 
-    // Feedback by category
     const feedbackByCategory = await Feedback.aggregate([
       { $group: { _id: "$category", count: { $sum: 1 } } },
       { $sort: { count: -1 } },
     ]);
 
-    // Feedback per month (last 6 months)
     const feedbackPerMonth = await Feedback.aggregate([
       { $match: { createdAt: { $gte: sixMonthsAgo } } },
       {
@@ -249,7 +353,6 @@ const getFeedbackAnalytics = async (req, res) => {
       { $sort: { "_id.year": 1, "_id.month": 1 } },
     ]);
 
-    // Average rating
     const ratingResult = await Feedback.aggregate([
       { $match: { rating: { $ne: null } } },
       { $group: { _id: null, avgRating: { $avg: "$rating" } } },
@@ -277,7 +380,7 @@ const getFeedbackAnalytics = async (req, res) => {
 const getAllFeedback = async (req, res) => {
   try {
     const feedbacks = await Feedback.find()
-      .populate("userId", "name email")
+      .populate("userId", "name email isEmailVerified isBanned")
       .sort({ createdAt: -1 });
 
     return res.status(200).json({
@@ -294,7 +397,7 @@ const getAllFeedback = async (req, res) => {
 const getFeedbackById = async (req, res) => {
   try {
     const feedback = await Feedback.findById(req.params.id)
-      .populate("userId", "name email");
+      .populate("userId", "name email isEmailVerified isBanned");
 
     if (!feedback) {
       return res.status(404).json({ success: false, message: "Feedback not found" });
@@ -330,7 +433,6 @@ const getTransactionAnalytics = async (req, res) => {
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-    // Total income vs expense
     const incomeExpense = await Ledger.aggregate([
       {
         $match: {
@@ -348,7 +450,6 @@ const getTransactionAnalytics = async (req, res) => {
       },
     ]);
 
-    // Monthly transaction volume (last 6 months)
     const monthlyVolume = await Ledger.aggregate([
       {
         $match: {
@@ -370,7 +471,6 @@ const getTransactionAnalytics = async (req, res) => {
       { $sort: { "_id.year": 1, "_id.month": 1 } },
     ]);
 
-    // Top spending categories
     const topCategories = await Ledger.aggregate([
       {
         $match: {
@@ -390,13 +490,11 @@ const getTransactionAnalytics = async (req, res) => {
       { $limit: 6 },
     ]);
 
-    // Total transaction count
     const totalTransactions = await Ledger.countDocuments({
       status: "COMPLETED",
       direction: "STANDARD",
     });
 
-    // Format income/expense
     const incomeData = incomeExpense.find((d) => d._id === "INCOME") || { total: 0, count: 0 };
     const expenseData = incomeExpense.find((d) => d._id === "EXPENSE") || { total: 0, count: 0 };
 
@@ -423,17 +521,10 @@ const getGoalAnalytics = async (req, res) => {
   try {
     const Goal = require("../models/goal");
 
-    // Goals by status
     const goalsByStatus = await Goal.aggregate([
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 },
-        },
-      },
+      { $group: { _id: "$status", count: { $sum: 1 } } },
     ]);
 
-    // Goals by category
     const goalsByCategory = await Goal.aggregate([
       {
         $group: {
@@ -446,15 +537,11 @@ const getGoalAnalytics = async (req, res) => {
       { $sort: { count: -1 } },
     ]);
 
-    // Average completion rate
     const completionData = await Goal.aggregate([
       {
         $project: {
           completionRate: {
-            $multiply: [
-              { $divide: ["$currentAmount", "$targetAmount"] },
-              100,
-            ],
+            $multiply: [{ $divide: ["$currentAmount", "$targetAmount"] }, 100],
           },
         },
       },
@@ -469,7 +556,6 @@ const getGoalAnalytics = async (req, res) => {
       },
     ]);
 
-    // Goals created per month (last 6 months)
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
@@ -477,10 +563,7 @@ const getGoalAnalytics = async (req, res) => {
       { $match: { createdAt: { $gte: sixMonthsAgo } } },
       {
         $group: {
-          _id: {
-            month: { $month: "$createdAt" },
-            year: { $year: "$createdAt" },
-          },
+          _id: { month: { $month: "$createdAt" }, year: { $year: "$createdAt" } },
           count: { $sum: 1 },
         },
       },
@@ -494,10 +577,9 @@ const getGoalAnalytics = async (req, res) => {
       totalCurrentAmount: 0,
     };
 
-    // Format status counts
-    const active = goalsByStatus.find((d) => d._id === "active") || { count: 0 };
+    const active    = goalsByStatus.find((d) => d._id === "active")    || { count: 0 };
     const completed = goalsByStatus.find((d) => d._id === "completed") || { count: 0 };
-    const overdue = goalsByStatus.find((d) => d._id === "overdue") || { count: 0 };
+    const overdue   = goalsByStatus.find((d) => d._id === "overdue")   || { count: 0 };
 
     return res.status(200).json({
       success: true,
@@ -528,7 +610,6 @@ const getAccountAnalytics = async (req, res) => {
   try {
     const Account = require("../models/Account");
 
-    // Accounts by type
     const accountsByType = await Account.aggregate([
       { $match: { deletedAt: null } },
       {
@@ -540,24 +621,12 @@ const getAccountAnalytics = async (req, res) => {
       },
     ]);
 
-    // Accounts by status
     const accountsByStatus = await Account.aggregate([
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 },
-        },
-      },
+      { $group: { _id: "$status", count: { $sum: 1 } } },
     ]);
 
-    // Total balance across all active accounts
     const balanceData = await Account.aggregate([
-      {
-        $match: {
-          status: "ACTIVE",
-          deletedAt: null,
-        },
-      },
+      { $match: { status: "ACTIVE", deletedAt: null } },
       {
         $group: {
           _id: null,
@@ -568,34 +637,18 @@ const getAccountAnalytics = async (req, res) => {
       },
     ]);
 
-    // Average accounts per user
     const avgAccountsPerUser = await Account.aggregate([
       { $match: { deletedAt: null } },
-      {
-        $group: {
-          _id: "$userId",
-          accountCount: { $sum: 1 },
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          avgAccounts: { $avg: "$accountCount" },
-        },
-      },
+      { $group: { _id: "$userId", accountCount: { $sum: 1 } } },
+      { $group: { _id: null, avgAccounts: { $avg: "$accountCount" } } },
     ]);
 
-    const balance = balanceData[0] || {
-      totalBalance: 0,
-      totalAccounts: 0,
-      avgBalance: 0,
-    };
-
+    const balance  = balanceData[0] || { totalBalance: 0, totalAccounts: 0, avgBalance: 0 };
     const cashData = accountsByType.find((d) => d._id === "CASH") || { count: 0, totalBalance: 0 };
     const bankData = accountsByType.find((d) => d._id === "BANK") || { count: 0, totalBalance: 0 };
-    const active = accountsByStatus.find((d) => d._id === "ACTIVE") || { count: 0 };
-    const frozen = accountsByStatus.find((d) => d._id === "FROZEN") || { count: 0 };
-    const closed = accountsByStatus.find((d) => d._id === "CLOSED") || { count: 0 };
+    const active   = accountsByStatus.find((d) => d._id === "ACTIVE")  || { count: 0 };
+    const frozen   = accountsByStatus.find((d) => d._id === "FROZEN")  || { count: 0 };
+    const closed   = accountsByStatus.find((d) => d._id === "CLOSED")  || { count: 0 };
 
     return res.status(200).json({
       success: true,
@@ -636,24 +689,22 @@ const getUserOverview = async (req, res) => {
     const mongoose = require("mongoose");
     const userObjectId = new mongoose.Types.ObjectId(userId);
 
-    // ── Accounts ──────────────────────────────────────────────────────────
     const accountStats = await Account.aggregate([
       { $match: { userId: userObjectId } },
       {
         $group: {
           _id: null,
           total:        { $sum: 1 },
-          active:       { $sum: { $cond: [{ $eq: ["$status", "ACTIVE"]  }, 1, 0] } },
-          frozen:       { $sum: { $cond: [{ $eq: ["$status", "FROZEN"]  }, 1, 0] } },
-          closed:       { $sum: { $cond: [{ $eq: ["$status", "CLOSED"]  }, 1, 0] } },
-          cashAccounts: { $sum: { $cond: [{ $eq: ["$type",   "CASH"]    }, 1, 0] } },
-          bankAccounts: { $sum: { $cond: [{ $eq: ["$type",   "BANK"]    }, 1, 0] } },
+          active:       { $sum: { $cond: [{ $eq: ["$status", "ACTIVE"] }, 1, 0] } },
+          frozen:       { $sum: { $cond: [{ $eq: ["$status", "FROZEN"] }, 1, 0] } },
+          closed:       { $sum: { $cond: [{ $eq: ["$status", "CLOSED"] }, 1, 0] } },
+          cashAccounts: { $sum: { $cond: [{ $eq: ["$type",   "CASH"]   }, 1, 0] } },
+          bankAccounts: { $sum: { $cond: [{ $eq: ["$type",   "BANK"]   }, 1, 0] } },
           totalBalance: { $sum: { $toDouble: "$availableBalance" } },
         },
       },
     ]);
 
-    // ── Goals ─────────────────────────────────────────────────────────────
     const goalStats = await Goal.aggregate([
       { $match: { userId: userObjectId } },
       {
@@ -663,13 +714,12 @@ const getUserOverview = async (req, res) => {
           active:             { $sum: { $cond: [{ $eq: ["$status", "active"]    }, 1, 0] } },
           completed:          { $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] } },
           overdue:            { $sum: { $cond: [{ $eq: ["$status", "overdue"]   }, 1, 0] } },
-          totalTargetAmount:  { $sum: "$targetAmount"  },
+          totalTargetAmount:  { $sum: "$targetAmount" },
           totalCurrentAmount: { $sum: "$currentAmount" },
         },
       },
     ]);
 
-    // ── Transactions ──────────────────────────────────────────────────────
     const txStats = await Ledger.aggregate([
       {
         $match: {
@@ -688,7 +738,6 @@ const getUserOverview = async (req, res) => {
       },
     ]);
 
-    // Top spending category for this user
     const topCategory = await Ledger.aggregate([
       {
         $match: {
@@ -698,12 +747,7 @@ const getUserOverview = async (req, res) => {
           direction: "STANDARD",
         },
       },
-      {
-        $group: {
-          _id: "$category",
-          total: { $sum: { $toDouble: "$amount" } },
-        },
-      },
+      { $group: { _id: "$category", total: { $sum: { $toDouble: "$amount" } } } },
       { $sort: { total: -1 } },
       { $limit: 1 },
     ]);
@@ -753,6 +797,10 @@ const getUserOverview = async (req, res) => {
 
 module.exports = {
   getStats,
+  getAdminProfile,
+  updateAdminProfile,
+  changeAdminPassword,
+  logoutAllAdminSessions,
   getAllUsers,
   getUserById,
   getScheduledDeletionUsers,

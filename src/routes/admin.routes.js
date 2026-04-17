@@ -9,28 +9,34 @@ router.use(adminMiddleware);
 // Stats
 router.get("/stats", adminController.getStats);
 
+// Admin own profile & account management
+router.get("/profile",           adminController.getAdminProfile);
+router.patch("/profile",         adminController.updateAdminProfile);
+router.patch("/change-password", adminController.changeAdminPassword);
+router.post("/logout-all",       adminController.logoutAllAdminSessions);
+
 // Users
 router.get("/users/scheduled-deletion", adminController.getScheduledDeletionUsers);
-router.get("/users", adminController.getAllUsers);
-router.get("/users/:id", adminController.getUserById);
-router.patch("/users/:id/ban", adminController.banUser);
-router.patch("/users/:id/unban", adminController.unbanUser);
-router.post("/users/:id/logout", adminController.logoutUser);
-router.patch("/users/:id/restore", adminController.restoreUser);
+router.get("/users",                    adminController.getAllUsers);
+router.get("/users/:id",                adminController.getUserById);
+router.patch("/users/:id/ban",          adminController.banUser);
+router.patch("/users/:id/unban",        adminController.unbanUser);
+router.post("/users/:id/logout",        adminController.logoutUser);
+router.patch("/users/:id/restore",      adminController.restoreUser);
 
 // User overview
 router.get("/users/:id/overview", adminController.getUserOverview);
 
 // Analytics
-router.get("/analytics/users", adminController.getUserAnalytics);
-router.get("/analytics/feedback", adminController.getFeedbackAnalytics);
+router.get("/analytics/users",        adminController.getUserAnalytics);
+router.get("/analytics/feedback",     adminController.getFeedbackAnalytics);
 router.get("/analytics/transactions", adminController.getTransactionAnalytics);
-router.get("/analytics/goals", adminController.getGoalAnalytics);
-router.get("/analytics/accounts", adminController.getAccountAnalytics);
+router.get("/analytics/goals",        adminController.getGoalAnalytics);
+router.get("/analytics/accounts",     adminController.getAccountAnalytics);
 
 // Feedback
-router.get("/feedback", adminController.getAllFeedback);
-router.get("/feedback/:id", adminController.getFeedbackById);
+router.get("/feedback",        adminController.getAllFeedback);
+router.get("/feedback/:id",    adminController.getFeedbackById);
 router.delete("/feedback/:id", adminController.deleteFeedback);
 
 module.exports = router;
