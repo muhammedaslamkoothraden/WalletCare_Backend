@@ -328,8 +328,8 @@ exports.updateGoal = async (req, res) => {
 
 exports.deleteGoal = async (req, res) => {
     try {
-        // Find the goal by ID and User ID, then delete it directly
-        const goal = await Goal.findOneAndDelete({
+        // 1. Find the goal first (without deleting it)
+        const goal = await Goal.findOne({
             _id: req.params.id,
             userId: req.user.id
         });
@@ -337,6 +337,17 @@ exports.deleteGoal = async (req, res) => {
         if (!goal) {
             return res.status(404).json({ success: false, message: 'Goal not found' });
         }
+
+        // 2. Check if the goal contains any saved amount
+        if (goal.currentAmount > 0) {
+            return res.status(400).json({ 
+                success: false, 
+                message: `Cannot delete goal. Please withdraw or transfer the remaining ₹${goal.currentAmount} before deleting.` 
+            });
+        }
+
+        // 3. If the amount is 0, it is safe to delete
+        await goal.deleteOne();
 
         return res.status(200).json({ success: true, message: 'Goal deleted successfully' });
     } catch (error) {
