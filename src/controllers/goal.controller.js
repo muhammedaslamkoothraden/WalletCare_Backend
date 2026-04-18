@@ -89,6 +89,22 @@ exports.createGoal = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Target amount must be positive' });
         }
 
+        // --- NEW: Check for existing goal with the same title ---
+        // We use a regex for a case-insensitive exact match
+        const existingGoal = await Goal.findOne({
+            userId: req.user.id,
+            title: { $regex: new RegExp(`^${title}$`, 'i') } 
+        });
+
+        if (existingGoal) {
+            // 409 Conflict is the semantic HTTP status for duplicate resource states
+            return res.status(409).json({ 
+                success: false, 
+                message: `You already have an active goal named "${title}". Please choose a different name.` 
+            });
+        }
+        // ---------------------------------------------------------
+
         const goal = await Goal.create({
             userId: req.user.id,
             title,
@@ -105,7 +121,6 @@ exports.createGoal = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
-
 
 // ─── 2. DEPOSIT TO GOAL (The Expense) ─────────────────────────────────────────
 
