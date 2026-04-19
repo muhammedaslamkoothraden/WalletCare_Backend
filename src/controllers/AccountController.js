@@ -88,20 +88,21 @@ exports.getAccountBalances = async (req, res) => {
 // ─── createAccount ────────────────────────────────────────────────────────────
 exports.createAccount = async (req, res) => {
   const session = await mongoose.startSession();
-  session.startTransaction();
 
   try {
+    session.startTransaction();
+
     const userId = req.user.id;
     const { name, type, minBalance, initialDeposit } = req.body;
 
-    // Fix #6: validate type early with a clean 400 response
-    const cleanType = type?.toUpperCase();
+    // 1. Validate account type
+    const cleanType = type?.trim().toUpperCase();
     if (!VALID_ACCOUNT_TYPES.has(cleanType)) {
       await session.abortTransaction();
       return errRes(res, 400, 'Invalid account type. Must be CASH or BANK');
     }
 
-    // Fix #7: sanitize name consistently with updateAccount
+    // 2. Validate and sanitize name
     let validatedName;
     try {
       validatedName = assertString(name, 'Account name', { maxLength: 32 });
@@ -110,7 +111,7 @@ exports.createAccount = async (req, res) => {
       return errRes(res, 400, err.message);
     }
 
-    // Fix #5: use resolveMinBalance instead of raw fallback
+    // 3. Resolve minimum balance
     let resolvedMin;
     try {
       resolvedMin = resolveMinBalance(minBalance, cleanType);
@@ -119,9 +120,36 @@ exports.createAccount = async (req, res) => {
       return errRes(res, 400, err.message);
     }
 
-    const depositAmount = new Decimal(initialDeposit || '0');
+    // 4. Validate initial deposit
+    let depositAmount;
+    try {
+      depositAmount = new Decimal(initialDeposit ?? '0');
+      if (depositAmount.isNegative()) {
+        await session.abortTransaction();
+        return errRes(res, 400, 'Initial deposit cannot be negative');
+      }
+    } catch {
+      await session.abortTransaction();
+      return errRes(res, 400, 'Invalid initial deposit amount');
+    }
 
-    // 1. Create the Account with a 0.00 balance
+    // 5. Check duplicate name before insert
+    const existing = await Account.findOne({
+      userId,
+      _normalizedName: validatedName.toLowerCase().trim(),
+      status: { $ne: 'CLOSED' },
+    }).session(session).lean();
+
+    if (existing) {
+      await session.abortTransaction();
+      return errRes(res, 409, 'An account with this name already exists');
+    }
+
+    // 6. Auto-set default if first account
+    const accountCount = await Account.countDocuments({ userId }).session(session);
+    const isFirstAccount = accountCount === 0;
+
+    // 7. Create account with zero balance
     const [newAccount] = await Account.create(
       [{
         userId,
@@ -129,28 +157,37 @@ exports.createAccount = async (req, res) => {
         type: cleanType,
         minBalance: resolvedMin,
         availableBalance: '0.00',
+        reservedBalance: '0.00',
+        isDefault: isFirstAccount,
       }],
       { session }
     );
 
-    // 2. Create the Ledger Entry for the initial deposit
+    // 8. Ledger entry + balance update for initial deposit
     if (depositAmount.greaterThan(0)) {
-      await Ledger.create([{
-        userId,
-        accountId: newAccount._id,
-        transactionType: 'INCOME',
-        direction: 'STANDARD',
-        category: 'Initial Deposit',
-        amount: depositAmount.toFixed(2),
-        description: `Account Opening Deposit`,
-        status: 'COMPLETED',
-        idempotencyKey: `init-dep-${newAccount._id}`,
-        transactedAt: new Date(),
-      }], { session });
+      await Ledger.create(
+        [{
+          userId,
+          accountId: newAccount._id,
+          transactionType: 'INCOME',
+          direction: 'STANDARD',
+          category: 'Initial Deposit',
+          amount: depositAmount.toFixed(2),
+          description: 'Account Opening Deposit',
+          status: 'COMPLETED',
+          idempotencyKey: `init-dep-${newAccount._id}`,
+          transactedAt: new Date(),
+        }],
+        { session }
+      );
 
-      // 3. Update the Account balance to reflect the deposit
+      await Account.collection.updateOne(
+        { _id: newAccount._id },
+        { $set: { availableBalance: depositAmount.toFixed(2) } },
+        { session }
+      );
+
       newAccount.availableBalance = depositAmount.toFixed(2);
-      await newAccount.save({ session });
     }
 
     await session.commitTransaction();
@@ -158,71 +195,13 @@ exports.createAccount = async (req, res) => {
 
   } catch (error) {
     await session.abortTransaction();
+    console.error('createAccount error:', error);
+
     if (error.code === 11000 && error.message.includes('_normalizedName')) {
       return errRes(res, 409, 'An account with this name already exists');
     }
+
     return errRes(res, 500, 'Failed to create account');
-  } finally {
-    session.endSession();
-  }
-};
-exports.setAccountAsDefault = async (req, res) => {
-  const session = await mongoose.startSession();
-  
-  try {
-    session.startTransaction();
-    const userId = req.user.id;
-    const { accountId } = req.params;
-
-    if (!mongoose.Types.ObjectId.isValid(accountId)) {
-      await session.abortTransaction();
-      return res.status(400).json({ success: false, error: 'Invalid accountId' });
-    }
-
-    // 1. Verify the account exists, belongs to the user, and isn't closed
-    const target = await Account.findOne({ 
-      _id: accountId, 
-      userId: userId, 
-      status: { $ne: 'CLOSED' } 
-    }).session(session);
-
-    if (!target) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, error: 'Account not found' });
-    }
-
-    if (target.isDefault) {
-      await session.abortTransaction();
-      return res.status(200).json({ success: true, message: 'Account is already default' });
-    }
-
-    // 2. Bypass Mongoose Middleware using native collection updates for pure speed and safety
-    // This unsets isDefault for all other accounts belonging to this user
-    await Account.collection.updateMany(
-      { userId: new mongoose.Types.ObjectId(userId), _id: { $ne: new mongoose.Types.ObjectId(accountId) } },
-      { $set: { isDefault: false } },
-      { session }
-    );
-
-    // 3. Set the target account to default (bypassing .save() to avoid version errors)
-    await Account.collection.updateOne(
-      { _id: new mongoose.Types.ObjectId(accountId) },
-      { $set: { isDefault: true } },
-      { session }
-    );
-
-    await session.commitTransaction();
-    return res.status(200).json({ success: true, message: 'Default account updated' });
-
-  } catch (error) {
-    await session.abortTransaction();
-    console.error("Set Default Error:", error);
-
-    if (error.code === 11000) {
-        return res.status(409).json({ success: false, error: 'Concurrent request conflict — please retry' });
-    }
-    
-    return res.status(500).json({ success: false, error: 'Failed to update default account' });
   } finally {
     session.endSession();
   }
