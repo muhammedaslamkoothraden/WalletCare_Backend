@@ -206,6 +206,68 @@ exports.createAccount = async (req, res) => {
     session.endSession();
   }
 };
+
+exports.setAccountAsDefault = async (req, res) => {
+  const session = await mongoose.startSession();
+  
+  try {
+    session.startTransaction();
+    const userId = req.user.id;
+    const { accountId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(accountId)) {
+      await session.abortTransaction();
+      return res.status(400).json({ success: false, error: 'Invalid accountId' });
+    }
+
+    // 1. Verify the account exists, belongs to the user, and isn't closed
+    const target = await Account.findOne({ 
+      _id: accountId, 
+      userId: userId, 
+      status: { $ne: 'CLOSED' } 
+    }).session(session);
+
+    if (!target) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, error: 'Account not found' });
+    }
+
+    if (target.isDefault) {
+      await session.abortTransaction();
+      return res.status(200).json({ success: true, message: 'Account is already default' });
+    }
+
+    // 2. Bypass Mongoose Middleware using native collection updates for pure speed and safety
+    // This unsets isDefault for all other accounts belonging to this user
+    await Account.collection.updateMany(
+      { userId: new mongoose.Types.ObjectId(userId), _id: { $ne: new mongoose.Types.ObjectId(accountId) } },
+      { $set: { isDefault: false } },
+      { session }
+    );
+
+    // 3. Set the target account to default (bypassing .save() to avoid version errors)
+    await Account.collection.updateOne(
+      { _id: new mongoose.Types.ObjectId(accountId) },
+      { $set: { isDefault: true } },
+      { session }
+    );
+
+    await session.commitTransaction();
+    return res.status(200).json({ success: true, message: 'Default account updated' });
+
+  } catch (error) {
+    await session.abortTransaction();
+    console.error("Set Default Error:", error);
+
+    if (error.code === 11000) {
+        return res.status(409).json({ success: false, error: 'Concurrent request conflict — please retry' });
+    }
+    
+    return res.status(500).json({ success: false, error: 'Failed to update default account' });
+  } finally {
+    session.endSession();
+  }
+};
 // ─── deleteAccount ────────────────────────────────────────────────────────────
 exports.deleteAccount = async (req, res) => {
   const session = await mongoose.startSession();
