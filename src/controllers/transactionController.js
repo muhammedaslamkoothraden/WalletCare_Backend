@@ -782,13 +782,14 @@ exports.getLatestTransactions = async (req, res, next) => {
       parentTransactionId: { $ne: null },
     });
 
-    // Convert to string set for fast lookup
     const reversedSet = new Set(reversedParentIds.map(id => id.toString()));
 
     const query = {
       userId:    new mongoose.Types.ObjectId(userId),
       status:    'COMPLETED',
       direction: { $ne: 'REVERSAL' },
+      // ✅ Exclude TRANSFER_IN legs — show only OUT leg to avoid duplicates
+      direction: { $nin: ['REVERSAL', 'ACCOUNT_TRANSFER_IN'] },
     };
 
     const latestTransactions = await Ledger.find(query)
@@ -802,7 +803,7 @@ exports.getLatestTransactions = async (req, res, next) => {
       count:   latestTransactions.length,
       data:    latestTransactions.map(tx => ({
         ...formatLedgerEntry(tx),
-        isCancelled: reversedSet.has(tx._id.toString()), 
+        isCancelled: reversedSet.has(tx._id.toString()),
       })),
     });
   } catch (error) {
