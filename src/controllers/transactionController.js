@@ -267,35 +267,31 @@ exports.processTransaction = async (req, res, next) => {
 
         // Guard: one reversal per parent — controller check provides a clear error
         // message; the one_reversal_per_parent DB index is the true enforcement layer.
-      // 1. Find all original transactions that have already been reversed
-        const reversedParentIds = await Ledger.distinct('parentTransactionId', {
-          accountId: parentTx.accountId,
+        const existingReversal = await Ledger.findOne({
           userId,
           direction: 'REVERSAL',
-          parentTransactionId: { $ne: null },
-        }).session(session);
+          parentTransactionId: parentTx._id,
+        }).session(session).lean();
 
-        const latestQuery = {
+        if (existingReversal) {
+          await session.abortTransaction();
+          return errRes(res, 400, 'This transaction has already been reversed');
+        }
+
+        // Guard: only the latest transaction on this account can be reversed
+        const latestTx = await Ledger.findOne({
           accountId: parentTx.accountId,
           userId,
           direction: { $ne: 'REVERSAL' },
           status:    'COMPLETED',
-        };
-
-        // 2. Exclude them from the search!
-        if (reversedParentIds.length > 0) {
-          latestQuery._id = { $nin: reversedParentIds };
-        }
-
-        // 3. Find the TRUE unreversed tip of the ledger
-        const latestNonReversalTx = await Ledger.findOne(latestQuery)
+        })
           .sort({ createdAt: -1, _id: -1 })
           .session(session)
           .lean();
-        if (latestNonReversalTx &&
-            latestNonReversalTx._id.toString() !== parentTransactionId.toString()) {
+
+        if (!latestTx || latestTx._id.toString() !== parentTransactionId.toString()) {
           await session.abortTransaction();
-          return errRes(res, 400, 'Only the most recent unreversed transaction can be reversed');
+          return errRes(res, 400, 'Only the most recent transaction can be reversed');
         }
 
         // Dual-leg path: if the parent belongs to a transfer group, reverse all legs
