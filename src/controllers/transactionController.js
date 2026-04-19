@@ -645,7 +645,7 @@ exports.getHistory = async (req, res, next) => {
 
     const history = await Ledger.find(query)
       .populate('accountId', 'name')
-      .sort({ transactedAt: -1, _id: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .limit(parsedLimit)
       .lean();
 
