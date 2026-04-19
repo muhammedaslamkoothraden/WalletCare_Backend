@@ -297,7 +297,22 @@ exports.updateGoal = async (req, res) => {
 
         // 🛠️ FIX: Removed the "Cannot modify completed goal" lock
 
-        if (body.title) goal.title = body.title;
+        // 🛠️ FIX: Safely check for duplicate names if the title is being changed
+        if (body.title && body.title !== goal.title) {
+            const existingGoal = await Goal.findOne({
+                userId: req.user.id,
+                title: body.title
+            });
+
+            if (existingGoal) {
+                return res.status(409).json({ 
+                    success: false, 
+                    message: `You already have a goal named "${body.title}". Please choose a different name.` 
+                });
+            }
+            goal.title = body.title;
+        }
+
         if (body.targetDate) goal.targetDate = body.targetDate;
 
         if (body.targetAmount !== undefined) {
@@ -342,7 +357,7 @@ exports.deleteGoal = async (req, res) => {
         if (goal.currentAmount > 0) {
             return res.status(400).json({ 
                 success: false, 
-                message: `Cannot delete goal. Please withdraw or transfer the remaining ₹${goal.currentAmount} before deleting.` 
+                message: `Cannot delete goal. Please withdraw  the remaining ₹${goal.currentAmount} before deleting.` 
             });
         }
 
