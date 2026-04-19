@@ -417,6 +417,7 @@ exports.processTransaction = async (req, res, next) => {
         idempotencyKey,
         linkedAccountId:      linkedAccountId      || null,
         parentTransactionId:  parentTransactionId  || null,
+        goalId:               parentTx?.goalId     || null, // 🛠️ ADD THIS LINE: Without this, it won't show in Goal History
         status:               'COMPLETED',
         transactedAt:         transactedAt ? new Date(transactedAt) : new Date(),
         runningBalance:       toDecimal128(newAvailable),
