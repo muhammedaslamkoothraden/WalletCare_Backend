@@ -776,23 +776,20 @@ exports.getLatestTransactions = async (req, res, next) => {
   try {
     const userId = req.user.id;
 
-    // Collect IDs of all originals that have been reversed so they can be
-    // suppressed. distinct() is more efficient than find() + manual Set here.
     const reversedParentIds = await Ledger.distinct('parentTransactionId', {
       userId,
       direction:           'REVERSAL',
       parentTransactionId: { $ne: null },
     });
 
+    // Convert to string set for fast lookup
+    const reversedSet = new Set(reversedParentIds.map(id => id.toString()));
+
     const query = {
       userId:    new mongoose.Types.ObjectId(userId),
       status:    'COMPLETED',
       direction: { $ne: 'REVERSAL' },
     };
-
-    if (reversedParentIds.length > 0) {
-      query._id = { $nin: reversedParentIds };
-    }
 
     const latestTransactions = await Ledger.find(query)
       .populate('accountId', 'name')
@@ -803,7 +800,10 @@ exports.getLatestTransactions = async (req, res, next) => {
     return res.status(200).json({
       success: true,
       count:   latestTransactions.length,
-      data:    latestTransactions.map(formatLedgerEntry),
+      data:    latestTransactions.map(tx => ({
+        ...formatLedgerEntry(tx),
+        isCancelled: reversedSet.has(tx._id.toString()), 
+      })),
     });
   } catch (error) {
     return next(error);
