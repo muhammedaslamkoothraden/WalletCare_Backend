@@ -770,8 +770,6 @@ exports.voidTransaction = async (req, res, next) => {
 //
 // Returns the 5 most recent settled transactions for the home screen widget.
 // Reversal entries and their reversed originals are excluded so the list
-// reflects the user's active transaction history only.
-
 exports.getLatestTransactions = async (req, res, next) => {
   try {
     const userId = req.user.id;
@@ -782,15 +780,17 @@ exports.getLatestTransactions = async (req, res, next) => {
       parentTransactionId: { $ne: null },
     });
 
+    // Convert to string set for fast lookup
     const reversedSet = new Set(reversedParentIds.map(id => id.toString()));
 
     const query = {
       userId:    new mongoose.Types.ObjectId(userId),
       status:    'COMPLETED',
       direction: { $ne: 'REVERSAL' },
-      // ✅ Exclude TRANSFER_IN legs — show only OUT leg to avoid duplicates
-      direction: { $nin: ['REVERSAL', 'ACCOUNT_TRANSFER_IN'] },
     };
+
+    // ❌ Removed: query._id = { $nin: reversedParentIds }
+    // Now we include reversed originals but flag them instead
 
     const latestTransactions = await Ledger.find(query)
       .populate('accountId', 'name')
@@ -803,14 +803,13 @@ exports.getLatestTransactions = async (req, res, next) => {
       count:   latestTransactions.length,
       data:    latestTransactions.map(tx => ({
         ...formatLedgerEntry(tx),
-        isCancelled: reversedSet.has(tx._id.toString()),
+        isCancelled: reversedSet.has(tx._id.toString()), // 👈 flag for Flutter
       })),
     });
   } catch (error) {
     return next(error);
   }
 };
-
 // ─── 6. reserveFunds ──────────────────────────────────────────────────────────
 //
 // Moves funds between availableBalance and reservedBalance on a single account.
