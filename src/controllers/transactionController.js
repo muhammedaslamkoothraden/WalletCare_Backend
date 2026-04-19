@@ -267,30 +267,31 @@ exports.processTransaction = async (req, res, next) => {
 
         // Guard: one reversal per parent — controller check provides a clear error
         // message; the one_reversal_per_parent DB index is the true enforcement layer.
-        const alreadyReversed = await Ledger.findOne({
-          parentTransactionId,
-          direction: 'REVERSAL',
+      // 1. Find all original transactions that have already been reversed
+        const reversedParentIds = await Ledger.distinct('parentTransactionId', {
+          accountId: parentTx.accountId,
           userId,
-        }).session(session).lean();
+          direction: 'REVERSAL',
+          parentTransactionId: { $ne: null },
+        }).session(session);
 
-        if (alreadyReversed) {
-          await session.abortTransaction();
-          return errRes(res, 409, 'This transaction has already been reversed');
-        }
-
-        // Guard: only the most recent unreversed entry on the account can be reversed.
-        // Reversal entries are excluded from the search so they do not shadow the
-        // original entry after the first reversal is applied.
-        const latestNonReversalTx = await Ledger.findOne({
+        const latestQuery = {
           accountId: parentTx.accountId,
           userId,
           direction: { $ne: 'REVERSAL' },
           status:    'COMPLETED',
-        })
-        .sort({ createdAt: -1, _id: -1 })
-        .session(session)
-        .lean();
+        };
 
+        // 2. Exclude them from the search!
+        if (reversedParentIds.length > 0) {
+          latestQuery._id = { $nin: reversedParentIds };
+        }
+
+        // 3. Find the TRUE unreversed tip of the ledger
+        const latestNonReversalTx = await Ledger.findOne(latestQuery)
+          .sort({ createdAt: -1, _id: -1 })
+          .session(session)
+          .lean();
         if (latestNonReversalTx &&
             latestNonReversalTx._id.toString() !== parentTransactionId.toString()) {
           await session.abortTransaction();
