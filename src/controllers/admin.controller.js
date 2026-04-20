@@ -11,6 +11,7 @@ const getStats = async (req, res) => {
     const bannedUsers = await User.countDocuments({ role: "user", isBanned: true });
     const activeUsers = totalUsers - bannedUsers;
     const premiumUsers = await User.countDocuments({ role: "user", isPremium: true });
+    const totalAdmins = await User.countDocuments({ role: { $in: ["admin", "superadmin"] } });
     const totalFeedbacks = await Feedback.countDocuments();
     const scheduledForDeletion = await User.countDocuments({
       role: "user",
@@ -24,6 +25,7 @@ const getStats = async (req, res) => {
         activeUsers,
         bannedUsers,
         premiumUsers,
+        totalAdmins,
         totalFeedbacks,
         scheduledForDeletion,
       },
@@ -142,7 +144,9 @@ const logoutAllAdminSessions = async (req, res) => {
 // GET /api/admin/users
 const getAllUsers = async (req, res) => {
   try {
-    const users = await User.find({ role: "user" })
+    const users = await User.find({ 
+      role: { $in: ["user", "admin"] }  // Only user and admin
+    })
       .select("-password -refreshToken")
       .sort({ createdAt: -1 });
 
@@ -795,6 +799,202 @@ const getUserOverview = async (req, res) => {
   }
 };
 
+
+// ========== SUPERADMIN ONLY FUNCTIONS ==========
+
+// POST /api/admin/create-admin
+const createAdmin = async (req, res) => {
+  try {
+    const { email, password, name } = req.body;
+
+    // Validation
+    if (!email || !password || !name) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Email, password, and name are required" 
+      });
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Password must be at least 8 characters" 
+      });
+    }
+
+    // Check if email already exists
+    const existingUser = await User.findOne({ email: email.trim().toLowerCase() });
+    if (existingUser) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Email already registered" 
+      });
+    }
+
+    // Create admin user
+    const newAdmin = new User({
+      email: email.trim().toLowerCase(),
+      password,
+      name: name.trim(),
+      role: "admin",
+      isEmailVerified: true, // Skip verification for admins
+    });
+
+    await newAdmin.save();
+
+    // Create wallet account for admin
+    const Account = require("../models/Account");
+    const newAccount = new Account({
+      userId: newAdmin._id,
+      name: "Main Wallet",
+      type: "CASH",
+      currency: "INR",
+      isDefault: true,
+      status: "ACTIVE",
+    });
+
+    await newAccount.save();
+
+    // Return admin data (exclude password)
+    const adminData = await User.findById(newAdmin._id).select("-password -refreshToken");
+
+    return res.status(201).json({
+      success: true,
+      message: "Admin created successfully",
+      data: adminData,
+    });
+
+  } catch (error) {
+    console.error("createAdmin error:", error);
+    if (error.code === 11000) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Email already exists" 
+      });
+    }
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+// GET /api/admin/admins - Get all admins
+const getAllAdmins = async (req, res) => {
+  try {
+    const admins = await User.find({ 
+      role: { $in: ["admin", "superadmin"] } 
+    })
+      .select("-password -refreshToken")
+      .sort({ createdAt: -1 });
+
+    return res.status(200).json({
+      success: true,
+      count: admins.length,
+      data: admins,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+// PATCH /api/admin/demote/:id - Remove admin role (demote to user)
+const demoteAdmin = async (req, res) => {
+  try {
+    const targetUser = await User.findById(req.params.id);
+
+    if (!targetUser) {
+      return res.status(404).json({ success: false, message: "Admin not found" });
+    }
+
+    // Prevent demoting superadmins
+    if (targetUser.role === "superadmin") {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Cannot demote a superadmin" 
+      });
+    }
+
+    // Prevent demoting yourself
+    if (targetUser._id.toString() === req.user._id.toString()) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Cannot demote yourself" 
+      });
+    }
+
+    if (targetUser.role !== "admin") {
+      return res.status(400).json({ 
+        success: false, 
+        message: "User is not an admin" 
+      });
+    }
+
+    // Demote to regular user
+    targetUser.role = "user";
+    await targetUser.save();
+
+    return res.status(200).json({ 
+      success: true, 
+      message: "Admin demoted to user successfully" 
+    });
+
+  } catch (error) {
+    console.error("demoteAdmin error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+// DELETE /api/admin/delete/:id - Delete admin account entirely
+const deleteAdmin = async (req, res) => {
+  try {
+    const targetUser = await User.findById(req.params.id);
+
+    if (!targetUser) {
+      return res.status(404).json({ success: false, message: "Admin not found" });
+    }
+
+    // Prevent deleting superadmins
+    if (targetUser.role === "superadmin") {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Cannot delete a superadmin" 
+      });
+    }
+
+    // Prevent deleting yourself
+    if (targetUser._id.toString() === req.user._id.toString()) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Cannot delete yourself" 
+      });
+    }
+
+    if (targetUser.role !== "admin") {
+      return res.status(400).json({ 
+        success: false, 
+        message: "User is not an admin" 
+      });
+    }
+
+    // Delete admin's account(s) and other data
+    const Account = require("../models/Account");
+    const Goal = require("../models/goal");
+    const Ledger = require("../models/Ledger");
+
+    await Account.deleteMany({ userId: targetUser._id });
+    await Goal.deleteMany({ userId: targetUser._id });
+    await Ledger.deleteMany({ userId: targetUser._id });
+    await User.findByIdAndDelete(targetUser._id);
+
+    return res.status(200).json({ 
+      success: true, 
+      message: "Admin deleted successfully" 
+    });
+
+  } catch (error) {
+    console.error("deleteAdmin error:", error);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
 module.exports = {
   getStats,
   getAdminProfile,
@@ -817,4 +1017,9 @@ module.exports = {
   getGoalAnalytics,
   getAccountAnalytics,
   getUserOverview,
+  // Superadmin functions
+  createAdmin,
+  getAllAdmins,
+  demoteAdmin,
+  deleteAdmin,
 };
