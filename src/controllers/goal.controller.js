@@ -10,10 +10,6 @@ const { createNotification } = require('../services/notification.service');
 
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
 
-/**
- * Enterprise-grade transaction wrapper with Exponential Backoff Retries.
- * Catches MongoDB TransientTransactionErrors and VersionErrors (OCC) and retries safely.
- */
 async function executeWithRetry(operation, maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         const session = await mongoose.startSession();
@@ -39,10 +35,6 @@ async function executeWithRetry(operation, maxRetries = 3) {
     }
 }
 
-/**
- * Safely updates available balance using an atomic DB pipeline to prevent TOCTOU races.
- * If balance drops below zero, it throws an error which aborts the session transaction.
- */
 async function updateAvailableBalance(accountId, userId, delta, session) {
     const account = await Account.findOneAndUpdate(
         { _id: accountId, userId },
@@ -68,7 +60,6 @@ async function updateAvailableBalance(accountId, userId, delta, session) {
 
     if (!account) throw new Error('Account not found or not authorized');
 
-    // Inside a transaction, we can safely check the result and abort if negative
     if (new Decimal(account.availableBalance.toString()).isNegative()) {
         throw new Error('Insufficient available balance in source account');
     }
@@ -89,21 +80,17 @@ exports.createGoal = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Target amount must be positive' });
         }
 
-        // --- NEW: Check for existing goal with the same title ---
-        // We use a regex for a case-insensitive exact match
         const existingGoal = await Goal.findOne({
             userId: req.user.id,
-            title: { $regex: new RegExp(`^${title}$`, 'i') } 
+            title: { $regex: new RegExp(`^${title}$`, 'i') }
         });
 
         if (existingGoal) {
-            // 409 Conflict is the semantic HTTP status for duplicate resource states
-            return res.status(409).json({ 
-                success: false, 
-                message: `You already have an active goal named "${title}". Please choose a different name.` 
+            return res.status(409).json({
+                success: false,
+                message: `You already have an active goal named "${title}". Please choose a different name.`
             });
         }
-        // ---------------------------------------------------------
 
         const goal = await Goal.create({
             userId: req.user.id,
@@ -122,7 +109,7 @@ exports.createGoal = async (req, res) => {
     }
 };
 
-// ─── 2. DEPOSIT TO GOAL (The Expense) ─────────────────────────────────────────
+// ─── 2. DEPOSIT TO GOAL ───────────────────────────────────────────────────────
 
 exports.depositToGoal = async (req, res) => {
     try {
@@ -147,10 +134,8 @@ exports.depositToGoal = async (req, res) => {
                 throw conflictError;
             }
 
-            // Deduct from account available balance
             const account = await updateAvailableBalance(accountId, req.user.id, depositAmount.negated(), session);
 
-            // Update Goal logic
             const currentAmt = new Decimal(goal.currentAmount.toString());
             const targetAmt = new Decimal(goal.targetAmount.toString());
             const newGoalAmount = currentAmt.plus(depositAmount);
@@ -158,14 +143,13 @@ exports.depositToGoal = async (req, res) => {
             goal.currentAmount = newGoalAmount.toNumber();
 
             const isNowAchieved = newGoalAmount.greaterThanOrEqualTo(targetAmt);
-
             if (isNowAchieved && goal.status !== 'completed') {
                 goal.status = 'completed';
             }
 
             await goal.save({ session });
 
-           const [ledger] = await Ledger.create([{
+            const [ledger] = await Ledger.create([{
                 userId: req.user.id,
                 accountId: account._id,
                 goalId: goal._id,
@@ -177,17 +161,14 @@ exports.depositToGoal = async (req, res) => {
                 status: 'COMPLETED',
                 idempotencyKey,
                 transactedAt: tDate,
-                // 🎯 ADD THIS LINE:
                 runningBalance: mongoose.Types.Decimal128.fromString(account.availableBalance.toString())
             }], { session });
 
-            // 🎯 This checks if THIS specific deposit pushed it from "active" to "completed"
             const justFinished = isNowAchieved && currentAmt.lessThan(targetAmt);
 
             return { goal, account, ledgerId: ledger._id, justFinished };
         });
 
-        // 🔥 THE FIX: We only trigger the notification if it JUST crossed the finish line!
         if (result.justFinished) {
             createNotification(
                 req.user.id,
@@ -211,7 +192,7 @@ exports.depositToGoal = async (req, res) => {
     }
 };
 
-// ─── WITHDRAW FROM GOAL ───────────────────────────────────────────────────────
+// ─── 3. WITHDRAW FROM GOAL ────────────────────────────────────────────────────
 
 exports.withdrawFromGoal = async (req, res) => {
     try {
@@ -228,8 +209,6 @@ exports.withdrawFromGoal = async (req, res) => {
             const goal = await Goal.findOne({ _id: req.params.id, userId: req.user.id }).session(session);
             if (!goal) throw new Error('Goal not found');
 
-            // 🛠️ FIX: Removed the "Cannot withdraw from a completed goal" error block!
-
             const currentGoalAmount = new Decimal(goal.currentAmount.toString());
             if (currentGoalAmount.lessThan(withdrawAmount)) {
                 throw new Error('Insufficient funds in this goal');
@@ -243,17 +222,13 @@ exports.withdrawFromGoal = async (req, res) => {
                 throw conflictError;
             }
 
-            // Add to account available balance
             const account = await updateAvailableBalance(accountId, req.user.id, withdrawAmount, session);
 
-            // Update Goal
             goal.currentAmount = currentGoalAmount.minus(withdrawAmount).toNumber();
-
-            // 🛠️ FIX: If they withdraw from a completed goal, it automatically reactivates!
             if (goal.currentAmount < goal.targetAmount) goal.status = 'active';
             await goal.save({ session });
 
-          const [ledger] = await Ledger.create([{
+            const [ledger] = await Ledger.create([{
                 userId: req.user.id,
                 accountId: account._id,
                 goalId: goal._id,
@@ -285,7 +260,7 @@ exports.withdrawFromGoal = async (req, res) => {
     }
 };
 
-// ─── UPDATE GOAL ───────────────────────────────────────────────────────────
+// ─── 4. UPDATE GOAL ───────────────────────────────────────────────────────────
 
 exports.updateGoal = async (req, res) => {
     try {
@@ -295,9 +270,6 @@ exports.updateGoal = async (req, res) => {
         if (!goal) return res.status(404).json({ success: false, message: 'Goal not found' });
         if (goal.userId.toString() !== req.user.id.toString()) return res.status(403).json({ success: false, message: 'Not authorized' });
 
-        // 🛠️ FIX: Removed the "Cannot modify completed goal" lock
-
-        // 🛠️ FIX: Safely check for duplicate names if the title is being changed
         if (body.title && body.title !== goal.title) {
             const existingGoal = await Goal.findOne({
                 userId: req.user.id,
@@ -305,9 +277,9 @@ exports.updateGoal = async (req, res) => {
             });
 
             if (existingGoal) {
-                return res.status(409).json({ 
-                    success: false, 
-                    message: `You already have a goal named "${body.title}". Please choose a different name.` 
+                return res.status(409).json({
+                    success: false,
+                    message: `You already have a goal named "${body.title}". Please choose a different name.`
                 });
             }
             goal.title = body.title;
@@ -321,17 +293,9 @@ exports.updateGoal = async (req, res) => {
             goal.targetAmount = body.targetAmount;
         }
 
-        if (body.category) {
-            // 🛠️ FIX: Removed the "hasMoney" check. Category can be changed anytime now!
-            goal.category = body.category;
-        }
+        if (body.category) goal.category = body.category;
 
-        // Check if the update instantly completes or reactivates the goal
-        if (goal.currentAmount >= goal.targetAmount) {
-            goal.status = 'completed';
-        } else {
-            goal.status = 'active';
-        }
+        goal.status = goal.currentAmount >= goal.targetAmount ? 'completed' : 'active';
 
         const updatedGoal = await goal.save();
         res.status(200).json({ success: true, message: 'Goal updated successfully', data: updatedGoal });
@@ -339,38 +303,32 @@ exports.updateGoal = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
-// ─── 4. DELETE GOAL ───────────────────────────────────────────────────────────
+
+// ─── 5. DELETE GOAL ───────────────────────────────────────────────────────────
 
 exports.deleteGoal = async (req, res) => {
     try {
-        // 1. Find the goal first (without deleting it)
-        const goal = await Goal.findOne({
-            _id: req.params.id,
-            userId: req.user.id
-        });
+        const goal = await Goal.findOne({ _id: req.params.id, userId: req.user.id });
 
         if (!goal) {
             return res.status(404).json({ success: false, message: 'Goal not found' });
         }
 
-        // 2. Check if the goal contains any saved amount
         if (goal.currentAmount > 0) {
-            return res.status(400).json({ 
-                success: false, 
-                message: `Cannot delete goal. Please withdraw  the remaining ₹${goal.currentAmount} before deleting.` 
+            return res.status(400).json({
+                success: false,
+                message: `Cannot delete goal. Please withdraw the remaining ₹${goal.currentAmount} before deleting.`
             });
         }
 
-        // 3. If the amount is 0, it is safe to delete
         await goal.deleteOne();
-
         return res.status(200).json({ success: true, message: 'Goal deleted successfully' });
     } catch (error) {
         return res.status(500).json({ success: false, message: error.message });
     }
 };
 
-// ─── READ OPERATIONS (GETTERS) ────────────────────────────────────────────────
+// ─── 6. GET GOALS ─────────────────────────────────────────────────────────────
 
 exports.getGoals = async (req, res) => {
     try {
@@ -399,6 +357,8 @@ exports.getGoals = async (req, res) => {
     }
 };
 
+// ─── 7. GET GOAL BY ID ────────────────────────────────────────────────────────
+
 exports.getGoalById = async (req, res) => {
     try {
         const { id } = req.params;
@@ -413,6 +373,8 @@ exports.getGoalById = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+// ─── 8. GET GOAL SUMMARY ──────────────────────────────────────────────────────
 
 exports.getGoalSummary = async (req, res) => {
     try {
@@ -436,6 +398,8 @@ exports.getGoalSummary = async (req, res) => {
     }
 };
 
+// ─── 9. GET GOAL PREDICTION ───────────────────────────────────────────────────
+
 exports.getGoalPrediction = async (req, res) => {
     try {
         const goals = await Goal.find({ userId: req.user.id, status: 'active' });
@@ -456,6 +420,8 @@ exports.getGoalPrediction = async (req, res) => {
     }
 };
 
+// ─── 10. GET ACCOUNT GOAL TRANSITIONS ────────────────────────────────────────
+
 exports.getAccountGoalTransitions = async (req, res) => {
     try {
         const { accountId } = req.params;
@@ -474,6 +440,8 @@ exports.getAccountGoalTransitions = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+// ─── 11. SHARE GOAL ───────────────────────────────────────────────────────────
 
 exports.shareGoal = async (req, res) => {
     try {
@@ -498,6 +466,8 @@ exports.shareGoal = async (req, res) => {
     }
 };
 
+// ─── 12. GET GOAL HISTORY ─────────────────────────────────────────────────────
+
 exports.getGoalHistory = async (req, res) => {
     try {
         const goalId = req.params.id;
@@ -517,40 +487,34 @@ exports.getGoalHistory = async (req, res) => {
             userId: req.user.id,
             goalId: goal._id,
             status: { $in: ['COMPLETED', 'PENDING'] },
+            direction: { $ne: 'REVERSAL' },
         };
 
-        // ─── Pagination Logic ────────────────────────────────────────────────
         if (lastId) {
-            const lastTx = await Ledger.findById(lastId).select('transactedAt').lean();
+            const lastTx = await Ledger.findById(lastId).select('createdAt').lean();
             if (lastTx) {
                 query.$or = [
-                    { transactedAt: { $lt: lastTx.transactedAt } },
-                    { transactedAt: lastTx.transactedAt, _id: { $lt: new mongoose.Types.ObjectId(lastId) } },
+                    { createdAt: { $lt: lastTx.createdAt } },
+                    { createdAt: lastTx.createdAt, _id: { $lt: new mongoose.Types.ObjectId(lastId) } },
                 ];
             }
         }
 
-        // ─── Reversal Exclusion Logic ────────────────────────────────────────
-        // We find all reversals for this goal to hide both the reversal AND the parent
+        // Build reversedSet to flag cancelled entries
         const reversals = await Ledger
             .find({ userId: req.user.id, goalId: goal._id, direction: 'REVERSAL' })
-            .select('_id parentTransactionId')
+            .select('parentTransactionId')
             .lean();
 
-        const excludedIds = new Set();
-        for (const r of reversals) {
-            excludedIds.add(r._id.toString());
-            if (r.parentTransactionId) excludedIds.add(r.parentTransactionId.toString());
-        }
+        const reversedSet = new Set(
+            reversals
+                .filter(r => r.parentTransactionId)
+                .map(r => r.parentTransactionId.toString())
+        );
 
-        if (excludedIds.size > 0) {
-            query._id = { $nin: [...excludedIds].map(id => new mongoose.Types.ObjectId(id)) };
-        }
-
-        // ─── Execution ───────────────────────────────────────────────────────
         const history = await Ledger.find(query)
-            .populate('accountId', 'name') // ✨ Crucial: Populate so Flutter knows which account was used
-            .sort({ transactedAt: -1, _id: -1 })
+            .populate('accountId', 'name')
+            .sort({ createdAt: -1, _id: -1 })
             .limit(parsedLimit)
             .lean();
 
@@ -561,9 +525,10 @@ exports.getGoalHistory = async (req, res) => {
             count: history.length,
             nextCursor: history.length === parsedLimit ? history.at(-1)._id : null,
             data: history.map(tx => ({
-                ...tx, // ✨ FIX: Spread full object so Flutter gets _id, accountId, category, type
+                ...tx,
                 amount: tx.amount.toString(),
-                accountName: tx.accountId?.name || 'Unknown Account', // Flattened for easy UI access
+                accountName: tx.accountId?.name || 'Unknown Account',
+                isCancelled: reversedSet.has(tx._id.toString()),
             })),
         });
     } catch (error) {

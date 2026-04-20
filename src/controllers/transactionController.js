@@ -936,6 +936,10 @@ exports.reserveFunds = async (req, res, next) => {
 
       account.availableBalance = toDecimal128(newAvailable);
       account.reservedBalance = toDecimal128(newReserved);
+
+      console.log('moveAmount:', moveAmount.toString());
+console.log('newAvailable:', newAvailable.toString());
+console.log('newReserved:', newReserved.toString());
       await account.save({ session });
 
       await session.commitTransaction();

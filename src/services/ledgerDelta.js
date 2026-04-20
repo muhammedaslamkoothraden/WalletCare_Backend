@@ -32,23 +32,17 @@ function computeBalanceDelta(direction, transactionType, rawAmount) {
       };
     }
 
-    case 'GOAL_ALLOCATION':
-    case 'RESERVED_IN': // 🎯 ADDED: Moving funds FROM Available TO Reserved
-      return { balanceChange: amount.negated(), reservedChange: amount };
+case 'GOAL_ALLOCATION':
+  return { balanceChange: amount.negated(), reservedChange: zero };
 
-    case 'GOAL_DEALLOCATION':
-    case 'RESERVED_OUT': // 🎯 ADDED: Moving funds FROM Reserved TO Available
-      return { balanceChange: amount, reservedChange: amount.negated() };
+case 'GOAL_DEALLOCATION':
+  return { balanceChange: amount, reservedChange: zero };
 
-    case 'GOAL_COMPLETION':
-      return { balanceChange: zero, reservedChange: amount.negated() };
+case 'RESERVED_IN':
+  return { balanceChange: amount.negated(), reservedChange: amount };
 
-    case 'ACCOUNT_TRANSFER_OUT':
-      return { balanceChange: amount.negated(), reservedChange: zero };
-
-    case 'ACCOUNT_TRANSFER_IN':
-      return { balanceChange: amount, reservedChange: zero };
-
+case 'RESERVED_OUT':
+  return { balanceChange: amount, reservedChange: amount.negated() };
     default:
       throw new Error(`Unrecognized direction in computeBalanceDelta: '${direction}'`);
   }
