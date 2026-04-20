@@ -48,15 +48,15 @@ const VALID_DIRECTIONS = Object.freeze(new Set([
 // Any combination not listed here is rejected before the transaction lock is acquired.
 const VALID_DIRECTION_TYPE_COMBINATIONS = Object.freeze(
   new Map([
-    ['STANDARD',             Object.freeze(new Set(['INCOME', 'EXPENSE']))],
-    ['GOAL_ALLOCATION',      Object.freeze(new Set(['EXPENSE', 'TRANSFER']))],
-    ['GOAL_DEALLOCATION',    Object.freeze(new Set(['INCOME', 'TRANSFER']))],
-    ['GOAL_COMPLETION',      Object.freeze(new Set(['EXPENSE']))],
+    ['STANDARD', Object.freeze(new Set(['INCOME', 'EXPENSE']))],
+    ['GOAL_ALLOCATION', Object.freeze(new Set(['EXPENSE', 'TRANSFER']))],
+    ['GOAL_DEALLOCATION', Object.freeze(new Set(['INCOME', 'TRANSFER']))],
+    ['GOAL_COMPLETION', Object.freeze(new Set(['EXPENSE']))],
     ['ACCOUNT_TRANSFER_OUT', Object.freeze(new Set(['TRANSFER']))],
-    ['ACCOUNT_TRANSFER_IN',  Object.freeze(new Set(['TRANSFER']))],
-    ['REVERSAL',             Object.freeze(new Set(['REVERSAL']))],
-    ['RESERVED_IN',          Object.freeze(new Set(['RESERVE']))],
-    ['RESERVED_OUT',         Object.freeze(new Set(['RESERVE']))],
+    ['ACCOUNT_TRANSFER_IN', Object.freeze(new Set(['TRANSFER']))],
+    ['REVERSAL', Object.freeze(new Set(['REVERSAL']))],
+    ['RESERVED_IN', Object.freeze(new Set(['RESERVE']))],
+    ['RESERVED_OUT', Object.freeze(new Set(['RESERVE']))],
   ])
 );
 
@@ -72,7 +72,7 @@ const VALID_STATUSES = Object.freeze(new Set([
 
 // Notification thresholds — centralised so product can tune without touching logic.
 const LOW_BALANCE_THRESHOLD = 500;
-const LARGE_TX_THRESHOLD    = 10000;
+const LARGE_TX_THRESHOLD = 10000;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -80,9 +80,9 @@ const LARGE_TX_THRESHOLD    = 10000;
 // Prevents raw Error objects or objects with circular refs from reaching Flutter.
 function errRes(res, status, message) {
   let safeMessage = 'An unknown error occurred';
-  if (typeof message === 'string')   safeMessage = message;
-  else if (message?.message)         safeMessage = message.message;
-  else if (message)                  safeMessage = message.toString();
+  if (typeof message === 'string') safeMessage = message;
+  else if (message?.message) safeMessage = message.message;
+  else if (message) safeMessage = message.toString();
   return res.status(status).json({ success: false, error: safeMessage });
 }
 
@@ -99,11 +99,11 @@ const toDecimal128 = (value) => {
 // is detected. Clients can treat this as a successful no-op.
 function duplicateResponse(res, ledgerDoc, accountDoc) {
   return res.status(409).json({
-    success:          true,
-    duplicate:        true,
-    txid:             ledgerDoc._id,
+    success: true,
+    duplicate: true,
+    txid: ledgerDoc._id,
     availableBalance: accountDoc?.availableBalance?.toString() ?? '0.00',
-    reservedBalance:  accountDoc?.reservedBalance?.toString()  ?? '0.00',
+    reservedBalance: accountDoc?.reservedBalance?.toString() ?? '0.00',
   });
 }
 
@@ -115,7 +115,7 @@ function reconcileAfterTransaction(accountId, userId) {
       if (result.status === 'OK') return;
       console.warn('[reconcile] Mismatch detected', {
         accountId: result.accountId,
-        status:    result.status,
+        status: result.status,
       });
     })
     .catch((err) => {
@@ -131,24 +131,24 @@ function reconcileAfterTransaction(accountId, userId) {
 // Centralised here so all endpoints return a consistent response envelope.
 function formatLedgerEntry(tx) {
   return {
-    _id:                   tx._id.toString(),
-    userId:                tx.userId.toString(),
-    accountId:             tx.accountId?._id ? tx.accountId._id.toString() : tx.accountId?.toString(),
-    accountName:           tx.accountId?.name ?? 'Unknown Account',
-    amount:                tx.amount?.toString()         ?? '0.00',
-    runningBalance:        tx.runningBalance?.toString() ?? '0.00',
-    transactionType:       tx.transactionType,
-    direction:             tx.direction,
-    category:              tx.category,
-    description:           tx.description             ?? null,
-    status:                tx.status,
-    idempotencyKey:        tx.idempotencyKey,
-    linkedAccountId:       tx.linkedAccountId?.toString()       ?? null,
-    parentTransactionId:   tx.parentTransactionId?.toString()   ?? null,
-    goalId:                tx.goalId?.toString()                ?? null,
-    transferGroupId:       tx.transferGroupId?.toString()       ?? null,
-    transactedAt:          tx.transactedAt,
-    createdAt:             tx.createdAt,
+    _id: tx._id.toString(),
+    userId: tx.userId.toString(),
+    accountId: tx.accountId?._id ? tx.accountId._id.toString() : tx.accountId?.toString(),
+    accountName: tx.accountId?.name ?? 'Unknown Account',
+    amount: tx.amount?.toString() ?? '0.00',
+    runningBalance: tx.runningBalance?.toString() ?? '0.00',
+    transactionType: tx.transactionType,
+    direction: tx.direction,
+    category: tx.category,
+    description: tx.description ?? null,
+    status: tx.status,
+    idempotencyKey: tx.idempotencyKey,
+    linkedAccountId: tx.linkedAccountId?.toString() ?? null,
+    parentTransactionId: tx.parentTransactionId?.toString() ?? null,
+    goalId: tx.goalId?.toString() ?? null,
+    transferGroupId: tx.transferGroupId?.toString() ?? null,
+    transactedAt: tx.transactedAt,
+    createdAt: tx.createdAt,
   };
 }
 
@@ -170,16 +170,16 @@ exports.processTransaction = async (req, res, next) => {
     if (missingField) throw new Error(`${missingField} is required`);
 
     input = {
-      accountId:            req.body.accountId,
-      amount:               parseAmount(req.body.amount),
-      transactionType:      req.body.transactionType,
-      direction:            req.body.direction,
-      category:             sanitizeCategory(req.body.category),
-      description:          sanitizeOptionalDescription(req.body.description),
-      idempotencyKey:       assertString(req.body.idempotencyKey, 'idempotencyKey', { maxLength: 128 }),
-      linkedAccountId:      req.body.linkedAccountId,
-      transactedAt:         req.body.transactedAt,
-      parentTransactionId:  req.body.parentTransactionId ?? null,
+      accountId: req.body.accountId,
+      amount: parseAmount(req.body.amount),
+      transactionType: req.body.transactionType,
+      direction: req.body.direction,
+      category: sanitizeCategory(req.body.category),
+      description: sanitizeOptionalDescription(req.body.description),
+      idempotencyKey: assertString(req.body.idempotencyKey, 'idempotencyKey', { maxLength: 128 }),
+      linkedAccountId: req.body.linkedAccountId,
+      transactedAt: req.body.transactedAt,
+      parentTransactionId: req.body.parentTransactionId ?? null,
     };
 
     if (input.idempotencyKey.length < 8) {
@@ -283,7 +283,7 @@ exports.processTransaction = async (req, res, next) => {
           accountId: parentTx.accountId,
           userId,
           direction: { $ne: 'REVERSAL' },
-          status:    'COMPLETED',
+          status: 'COMPLETED',
         })
           .sort({ createdAt: -1, _id: -1 })
           .session(session)
@@ -312,11 +312,11 @@ exports.processTransaction = async (req, res, next) => {
                 accountId: leg.accountId,
                 userId,
                 direction: { $ne: 'REVERSAL' },
-                status:    'COMPLETED',
+                status: 'COMPLETED',
               })
-              .sort({ createdAt: -1, _id: -1 })
-              .session(session)
-              .lean();
+                .sort({ createdAt: -1, _id: -1 })
+                .session(session)
+                .lean();
 
               if (latestLegTx && latestLegTx._id.toString() !== leg._id.toString()) {
                 await session.abortTransaction();
@@ -341,7 +341,7 @@ exports.processTransaction = async (req, res, next) => {
             );
 
             const newLegAvailable = new Decimal(legAccount.availableBalance.toString()).plus(balanceChange);
-            const newLegReserved  = new Decimal(legAccount.reservedBalance.toString()).plus(reservedChange);
+            const newLegReserved = new Decimal(legAccount.reservedBalance.toString()).plus(reservedChange);
 
             if (newLegAvailable.isNegative()) {
               await session.abortTransaction();
@@ -350,23 +350,23 @@ exports.processTransaction = async (req, res, next) => {
 
             reversedLedgers.push({
               userId,
-              accountId:            leg.accountId,
-              amount:               toDecimal128(leg.amount),
-              transactionType:      'REVERSAL',
-              direction:            'REVERSAL',
-              category:             'Refund / Correction',
-              description:          `Reversal of transfer leg: ${leg._id}`,
-              idempotencyKey:       `${idempotencyKey}-${leg.direction}`,
-              linkedAccountId:      leg.linkedAccountId,
-              parentTransactionId:  leg._id,
-              status:               'COMPLETED',
-              transferGroupId:      leg.transferGroupId,
-              transactedAt:         transactedAt ? new Date(transactedAt) : new Date(),
-              runningBalance:       toDecimal128(newLegAvailable),
+              accountId: leg.accountId,
+              amount: toDecimal128(leg.amount),
+              transactionType: 'REVERSAL',
+              direction: 'REVERSAL',
+              category: 'Refund / Correction',
+              description: `Reversal of transfer leg: ${leg._id}`,
+              idempotencyKey: `${idempotencyKey}-${leg.direction}`,
+              linkedAccountId: leg.linkedAccountId,
+              parentTransactionId: leg._id,
+              status: 'COMPLETED',
+              transferGroupId: leg.transferGroupId,
+              transactedAt: transactedAt ? new Date(transactedAt) : new Date(),
+              runningBalance: toDecimal128(newLegAvailable),
             });
 
             legAccount.availableBalance = toDecimal128(newLegAvailable);
-            legAccount.reservedBalance  = toDecimal128(newLegReserved);
+            legAccount.reservedBalance = toDecimal128(newLegReserved);
             await legAccount.save({ session });
           }
 
@@ -378,8 +378,8 @@ exports.processTransaction = async (req, res, next) => {
           }
 
           return res.status(201).json({
-            success:       true,
-            message:       'Transfer fully reversed',
+            success: true,
+            message: 'Transfer fully reversed',
             reversedCount: reversedLedgers.length,
           });
         }
@@ -390,11 +390,12 @@ exports.processTransaction = async (req, res, next) => {
       // ── Balance delta computation ───────────────────────────────────────────
       const currentAvailable = new Decimal(account.availableBalance.toString());
 
-      const { balanceChange } = direction === 'REVERSAL'
+      const { balanceChange, reservedChange } = direction === 'REVERSAL'
         ? computeReversalDelta(parentTx.direction, parentTx.transactionType, safeAmount)
         : computeBalanceDelta(direction, transactionType, safeAmount);
 
       const newAvailable = currentAvailable.plus(balanceChange);
+      const newReserved = new Decimal(account.reservedBalance.toString()).plus(reservedChange);
 
       if (newAvailable.isNegative()) {
         await session.abortTransaction();
@@ -405,31 +406,32 @@ exports.processTransaction = async (req, res, next) => {
       const [newLedger] = await Ledger.create([{
         userId,
         accountId,
-        amount:               toDecimal128(safeAmount),
+        amount: toDecimal128(safeAmount),
         transactionType,
         direction,
-        category:             safeCategory,
-        description:          safeDescription,
+        category: safeCategory,
+        description: safeDescription,
         idempotencyKey,
-        linkedAccountId:      linkedAccountId      || null,
-        parentTransactionId:  parentTransactionId  || null,
-        goalId:               parentTx?.goalId     || null, // 🛠️ ADD THIS LINE: Without this, it won't show in Goal History
-        status:               'COMPLETED',
-        transactedAt:         transactedAt ? new Date(transactedAt) : new Date(),
-        runningBalance:       toDecimal128(newAvailable),
+        linkedAccountId: linkedAccountId || null,
+        parentTransactionId: parentTransactionId || null,
+        goalId: parentTx?.goalId || null, 
+        status: 'COMPLETED',
+        transactedAt: transactedAt ? new Date(transactedAt) : new Date(),
+        runningBalance: toDecimal128(newAvailable),
       }], { session });
 
       // ── Account balance update ─────────────────────────────────────────────
       account.availableBalance = toDecimal128(newAvailable);
+      account.reservedBalance = toDecimal128(newReserved);
       await account.save({ session });
 
       // ── Goal synchronisation — only triggered on goal-related reversals ─────
       if (direction === 'REVERSAL' && parentTx?.goalId) {
         const goal = await Goal.findOne({ _id: parentTx.goalId, userId }).session(session);
         if (goal) {
-          const currentAmt  = new Decimal(goal.currentAmount.toString());
+          const currentAmt = new Decimal(goal.currentAmount.toString());
           const reversalAmt = new Decimal(safeAmount.toString());
-          const targetAmt   = new Decimal(goal.targetAmount.toString());
+          const targetAmt = new Decimal(goal.targetAmount.toString());
 
           if (parentTx.direction === 'GOAL_ALLOCATION') {
             const newAmt = currentAmt.minus(reversalAmt);
@@ -450,11 +452,11 @@ exports.processTransaction = async (req, res, next) => {
       reconcileAfterTransaction(accountId, userId);
 
       // ── Fire-and-forget notifications — non-blocking, never throws ─────────
-      const isExpense    = transactionType === 'EXPENSE';
-      const isTransfer   = TRANSFER_DIRECTIONS.has(direction);
+      const isExpense = transactionType === 'EXPENSE';
+      const isTransfer = TRANSFER_DIRECTIONS.has(direction);
       const amountDecimal = new Decimal(safeAmount.toString());
-      const minBalance    = new Decimal(account.minBalance?.toString() || '0');
-      const accountName   = account.name || 'Account';
+      const minBalance = new Decimal(account.minBalance?.toString() || '0');
+      const accountName = account.name || 'Account';
 
       if (isExpense && minBalance.greaterThan(0) && newAvailable.lessThan(minBalance)) {
         createNotification(
@@ -472,15 +474,15 @@ exports.processTransaction = async (req, res, next) => {
       }
 
       return res.status(201).json({
-        success:          true,
-        txid:             newLedger._id,
+        success: true,
+        txid: newLedger._id,
         availableBalance: newAvailable.toFixed(2),
       });
 
     } catch (error) {
-      if (session.inTransaction()) await session.abortTransaction().catch(() => {});
+      if (session.inTransaction()) await session.abortTransaction().catch(() => { });
 
-      const isVersionError  = error.name === 'VersionError';
+      const isVersionError = error.name === 'VersionError';
       const isWriteConflict = error.code === 112 || error.hasErrorLabel?.('TransientTransactionError');
 
       if ((isVersionError || isWriteConflict) && attempt < MAX_RETRIES) {
@@ -512,13 +514,13 @@ exports.accountTransfer = async (req, res, next) => {
     if (missing) throw new Error(`${missing} is required`);
 
     input = {
-      fromAccountId:  req.body.fromAccountId,
-      toAccountId:    req.body.toAccountId,
-      amount:         parseAmount(req.body.amount),
-      category:       sanitizeCategory(req.body.category),
-      description:    sanitizeOptionalDescription(req.body.description),
+      fromAccountId: req.body.fromAccountId,
+      toAccountId: req.body.toAccountId,
+      amount: parseAmount(req.body.amount),
+      category: sanitizeCategory(req.body.category),
+      description: sanitizeOptionalDescription(req.body.description),
       idempotencyKey: assertString(req.body.idempotencyKey, 'idempotencyKey', { maxLength: 128 }),
-      transactedAt:   req.body.transactedAt,
+      transactedAt: req.body.transactedAt,
     };
 
     if (input.idempotencyKey.length < 8) {
@@ -535,7 +537,7 @@ exports.accountTransfer = async (req, res, next) => {
   } = input;
 
   if (!mongoose.Types.ObjectId.isValid(fromAccountId)) return errRes(res, 400, 'Invalid fromAccountId');
-  if (!mongoose.Types.ObjectId.isValid(toAccountId))   return errRes(res, 400, 'Invalid toAccountId');
+  if (!mongoose.Types.ObjectId.isValid(toAccountId)) return errRes(res, 400, 'Invalid toAccountId');
   if (fromAccountId.toString() === toAccountId.toString()) {
     return errRes(res, 400, 'fromAccountId and toAccountId must not be the same account');
   }
@@ -582,7 +584,7 @@ exports.getHistory = async (req, res, next) => {
     if (startDate || endDate) {
       query.transactedAt = {};
       if (startDate) query.transactedAt.$gte = new Date(startDate);
-      if (endDate)   query.transactedAt.$lte = new Date(endDate);
+      if (endDate) query.transactedAt.$lte = new Date(endDate);
     }
 
     if (category) query.category = sanitizeCategory(category);
@@ -594,11 +596,11 @@ exports.getHistory = async (req, res, next) => {
 
     // Cursor pagination (Uses $or)
     if (lastId) {
-      const lastTx = await Ledger.findById(lastId).select('transactedAt').lean();
+      const lastTx = await Ledger.findById(lastId).select('createdAt').lean();
       if (lastTx) {
         query.$or = [
-          { transactedAt: { $lt: lastTx.transactedAt } },
-          { transactedAt: lastTx.transactedAt, _id: { $lt: new mongoose.Types.ObjectId(lastId) } },
+          { createdAt: { $lt: lastTx.createdAt } },
+          { createdAt: lastTx.createdAt, _id: { $lt: new mongoose.Types.ObjectId(lastId) } },
         ];
       }
     }
@@ -629,14 +631,12 @@ exports.getHistory = async (req, res, next) => {
 
     const reversedParentIds = await Ledger.distinct('parentTransactionId', {
       ...reversalScope,
-      direction:            'REVERSAL',
-      parentTransactionId:  { $ne: null },
+      direction: 'REVERSAL',
+      parentTransactionId: { $ne: null },
     });
 
     query.direction = { $ne: 'REVERSAL' };
-    if (reversedParentIds.length > 0) {
-      query._id = { $nin: reversedParentIds };
-    }
+    const reversedSet = new Set(reversedParentIds.map(id => id.toString()));
 
     const parsedLimit = Math.min(parseInt(limit, 10) || 20, 100);
 
@@ -646,15 +646,18 @@ exports.getHistory = async (req, res, next) => {
       .limit(parsedLimit)
       .lean();
 
-    const nextCursor = history.length === parsedLimit && history.length > 0 
-      ? history[history.length - 1]._id.toString() 
+    const nextCursor = history.length === parsedLimit && history.length > 0
+      ? history[history.length - 1]._id.toString()
       : null;
 
     return res.status(200).json({
       success: true,
-      count:   history.length,
+      count: history.length,
       nextCursor: nextCursor,
-      data:    history.map(formatLedgerEntry),
+      data: history.map(tx => ({
+        ...formatLedgerEntry(tx),
+        isCancelled: reversedSet.has(tx._id.toString()),
+      })),
     });
 
   } catch (error) {
@@ -691,6 +694,21 @@ exports.voidTransaction = async (req, res, next) => {
         await session.abortTransaction();
         return errRes(res, 400, `Only COMPLETED transactions can be voided. Current status: '${ledger.status}'`);
       }
+      if (ledger.transferGroupId) {
+        await session.abortTransaction();
+        return errRes(res, 400, 'Cannot void a transfer directly. Use REVERSAL to undo a transfer.');
+      }
+
+      const existingReversal = await Ledger.findOne({
+        userId,
+        direction: 'REVERSAL',
+        parentTransactionId: ledger._id,
+      }).session(session).lean();
+
+      if (existingReversal) {
+        await session.abortTransaction();
+        return errRes(res, 400, 'Cannot void a transaction that has already been reversed');
+      }
 
       const account = await Account.findOne({ _id: ledger.accountId, userId }).session(session);
       if (!account) {
@@ -705,7 +723,7 @@ exports.voidTransaction = async (req, res, next) => {
       );
 
       const newAvailable = new Decimal(account.availableBalance.toString()).plus(balanceChange);
-      const newReserved  = new Decimal(account.reservedBalance.toString()).plus(reservedChange);
+      const newReserved = new Decimal(account.reservedBalance.toString()).plus(reservedChange);
 
       if (newAvailable.isNegative()) {
         await session.abortTransaction();
@@ -716,7 +734,7 @@ exports.voidTransaction = async (req, res, next) => {
       await ledger.save({ session });
 
       account.availableBalance = toDecimal128(newAvailable);
-      account.reservedBalance  = toDecimal128(newReserved);
+      account.reservedBalance = toDecimal128(newReserved);
       await account.save({ session });
 
       // Synchronise goal progress if the voided entry was goal-linked.
@@ -741,17 +759,17 @@ exports.voidTransaction = async (req, res, next) => {
       reconcileAfterTransaction(ledger.accountId.toString(), userId);
 
       return res.status(200).json({
-        success:          true,
-        txid:             ledger._id,
-        status:           'VOIDED',
+        success: true,
+        txid: ledger._id,
+        status: 'VOIDED',
         availableBalance: newAvailable.toFixed(2),
-        reservedBalance:  newReserved.toFixed(2),
+        reservedBalance: newReserved.toFixed(2),
       });
 
     } catch (error) {
-      if (session.inTransaction()) await session.abortTransaction().catch(() => {});
+      if (session.inTransaction()) await session.abortTransaction().catch(() => { });
 
-      const isVersionError  = error.name === 'VersionError';
+      const isVersionError = error.name === 'VersionError';
       const isWriteConflict = error.code === 112 || error.hasErrorLabel?.('TransientTransactionError');
 
       if ((isVersionError || isWriteConflict) && attempt < MAX_RETRIES) {
@@ -776,7 +794,7 @@ exports.getLatestTransactions = async (req, res, next) => {
 
     const reversedParentIds = await Ledger.distinct('parentTransactionId', {
       userId,
-      direction:           'REVERSAL',
+      direction: 'REVERSAL',
       parentTransactionId: { $ne: null },
     });
 
@@ -784,8 +802,8 @@ exports.getLatestTransactions = async (req, res, next) => {
     const reversedSet = new Set(reversedParentIds.map(id => id.toString()));
 
     const query = {
-      userId:    new mongoose.Types.ObjectId(userId),
-      status:    'COMPLETED',
+      userId: new mongoose.Types.ObjectId(userId),
+      status: 'COMPLETED',
       direction: { $ne: 'REVERSAL' },
     };
 
@@ -800,8 +818,8 @@ exports.getLatestTransactions = async (req, res, next) => {
 
     return res.status(200).json({
       success: true,
-      count:   latestTransactions.length,
-      data:    latestTransactions.map(tx => ({
+      count: latestTransactions.length,
+      data: latestTransactions.map(tx => ({
         ...formatLedgerEntry(tx),
         isCancelled: reversedSet.has(tx._id.toString()), // 👈 flag for Flutter
       })),
@@ -826,11 +844,11 @@ exports.reserveFunds = async (req, res, next) => {
     if (missing) throw new Error(`${missing} is required`);
 
     input = {
-      accountId:      req.body.accountId,
-      amount:         parseAmount(req.body.amount),
-      action:         req.body.action.toUpperCase(),
-      category:       sanitizeCategory(req.body.category || 'System Reserve'),
-      description:    sanitizeOptionalDescription(req.body.description),
+      accountId: req.body.accountId,
+      amount: parseAmount(req.body.amount),
+      action: req.body.action.toUpperCase(),
+      category: sanitizeCategory(req.body.category || 'System Reserve'),
+      description: sanitizeOptionalDescription(req.body.description),
       idempotencyKey: assertString(req.body.idempotencyKey, 'idempotencyKey', { maxLength: 128 }),
     };
 
@@ -877,24 +895,24 @@ exports.reserveFunds = async (req, res, next) => {
       }
 
       const currentAvailable = new Decimal(account.availableBalance.toString());
-      const currentReserved  = new Decimal(account.reservedBalance.toString());
-      const moveAmount       = new Decimal(safeAmount.toString());
+      const currentReserved = new Decimal(account.reservedBalance.toString());
+      const moveAmount = new Decimal(safeAmount.toString());
 
       let newAvailable, newReserved, direction;
 
       if (action === 'RESERVE') {
-        direction    = 'RESERVED_IN';
+        direction = 'RESERVED_IN';
         newAvailable = currentAvailable.minus(moveAmount);
-        newReserved  = currentReserved.plus(moveAmount);
+        newReserved = currentReserved.plus(moveAmount);
 
         if (newAvailable.isNegative()) {
           await session.abortTransaction();
           return errRes(res, 400, `Insufficient available balance to reserve ₹${moveAmount.toFixed(2)}`);
         }
       } else {
-        direction    = 'RESERVED_OUT';
+        direction = 'RESERVED_OUT';
         newAvailable = currentAvailable.plus(moveAmount);
-        newReserved  = currentReserved.minus(moveAmount);
+        newReserved = currentReserved.minus(moveAmount);
 
         if (newReserved.isNegative()) {
           await session.abortTransaction();
@@ -905,36 +923,36 @@ exports.reserveFunds = async (req, res, next) => {
       const [newLedger] = await Ledger.create([{
         userId,
         accountId,
-        amount:         toDecimal128(safeAmount),
+        amount: toDecimal128(safeAmount),
         transactionType: 'RESERVE',
         direction,
-        category:       safeCategory,
-        description:    safeDescription,
+        category: safeCategory,
+        description: safeDescription,
         idempotencyKey,
-        status:         'COMPLETED',
-        transactedAt:   new Date(),
+        status: 'COMPLETED',
+        transactedAt: new Date(),
         runningBalance: toDecimal128(newAvailable),
       }], { session });
 
       account.availableBalance = toDecimal128(newAvailable);
-      account.reservedBalance  = toDecimal128(newReserved);
+      account.reservedBalance = toDecimal128(newReserved);
       await account.save({ session });
 
       await session.commitTransaction();
       reconcileAfterTransaction(accountId, userId);
 
       return res.status(201).json({
-        success:          true,
+        success: true,
         action,
-        txid:             newLedger._id,
+        txid: newLedger._id,
         availableBalance: newAvailable.toFixed(2),
-        reservedBalance:  newReserved.toFixed(2),
+        reservedBalance: newReserved.toFixed(2),
       });
 
     } catch (error) {
-      if (session.inTransaction()) await session.abortTransaction().catch(() => {});
+      if (session.inTransaction()) await session.abortTransaction().catch(() => { });
 
-      const isVersionError  = error.name === 'VersionError';
+      const isVersionError = error.name === 'VersionError';
       const isWriteConflict = error.code === 112 || error.hasErrorLabel?.('TransientTransactionError');
 
       if ((isVersionError || isWriteConflict) && attempt < MAX_RETRIES) {
