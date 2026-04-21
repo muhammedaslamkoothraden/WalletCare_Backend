@@ -70,10 +70,6 @@ const VALID_STATUSES = Object.freeze(new Set([
   'PENDING', 'COMPLETED', 'FAILED', 'VOIDED',
 ]));
 
-// Notification thresholds — centralised so product can tune without touching logic.
-const LOW_BALANCE_THRESHOLD = 500;
-const LARGE_TX_THRESHOLD = 10000;
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 // Normalises any error type to a plain string before sending to the client.
@@ -414,7 +410,7 @@ exports.processTransaction = async (req, res, next) => {
         idempotencyKey,
         linkedAccountId: linkedAccountId || null,
         parentTransactionId: parentTransactionId || null,
-        goalId: parentTx?.goalId || null, 
+        goalId: parentTx?.goalId || null,
         status: 'COMPLETED',
         transactedAt: transactedAt ? new Date(transactedAt) : new Date(),
         runningBalance: toDecimal128(newAvailable),
@@ -464,15 +460,7 @@ exports.processTransaction = async (req, res, next) => {
           `Balance Alert: '${accountName}' is below the minimum threshold. Current balance: ₹${newAvailable.toFixed(2)}.`,
           'low_balance'
         ).catch((e) => console.warn('[notify] Low balance notification failed:', e.message));
-      } else if (amountDecimal.greaterThanOrEqualTo(LARGE_TX_THRESHOLD)) {
-        const actionWord = isTransfer ? 'transferred' : isExpense ? 'debited' : 'credited';
-        createNotification(
-          userId,
-          `Transaction Alert: ₹${amountDecimal.toFixed(2)} was ${actionWord} on '${accountName}'.`,
-          'large_transaction'
-        ).catch((e) => console.warn('[notify] Large transaction notification failed:', e.message));
       }
-
       return res.status(201).json({
         success: true,
         txid: newLedger._id,
@@ -526,6 +514,9 @@ exports.accountTransfer = async (req, res, next) => {
     if (input.idempotencyKey.length < 8) {
       throw new StringValidationError('idempotencyKey must be at least 8 characters');
     }
+    if (input.transactedAt != null && isNaN(new Date(input.transactedAt).getTime())) {
+      throw new Error('transactedAt must be a valid date');
+    }
   } catch (error) {
     return errRes(res, 400, error.message);
   }
@@ -570,7 +561,6 @@ exports.accountTransfer = async (req, res, next) => {
 exports.getHistory = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    // 1. ADDED 'type' and 'searchQuery' to the destructuring
     const { accountId, category, limit = 20, lastId, status, startDate, endDate, type, searchQuery } = req.query;
 
     const query = { userId: new mongoose.Types.ObjectId(userId) };
@@ -581,6 +571,7 @@ exports.getHistory = async (req, res, next) => {
       query.accountId = new mongoose.Types.ObjectId(accountId);
     }
 
+    // FIX 1: typo fixed (createdA → transactedAt) + FIX 2: use transactedAt for date filter
     if (startDate || endDate) {
       query.transactedAt = {};
       if (startDate) query.transactedAt.$gte = new Date(startDate);
@@ -589,23 +580,21 @@ exports.getHistory = async (req, res, next) => {
 
     if (category) query.category = sanitizeCategory(category);
 
-    // 2. ADDED: Filter by Income/Expense/Transfer
     if (type) {
       query.transactionType = type.toUpperCase();
     }
 
-    // Cursor pagination (Uses $or)
+    // FIX 3: cursor pagination uses transactedAt
     if (lastId) {
-      const lastTx = await Ledger.findById(lastId).select('createdAt').lean();
+      const lastTx = await Ledger.findById(lastId).select('transactedAt').lean();
       if (lastTx) {
         query.$or = [
-          { createdAt: { $lt: lastTx.createdAt } },
-          { createdAt: lastTx.createdAt, _id: { $lt: new mongoose.Types.ObjectId(lastId) } },
+          { transactedAt: { $lt: lastTx.transactedAt } },
+          { transactedAt: lastTx.transactedAt, _id: { $lt: new mongoose.Types.ObjectId(lastId) } },
         ];
       }
     }
 
-    // 3. ADDED: Text Search (Safely handles existing $or from cursor)
     if (searchQuery) {
       const searchOr = [
         { category: { $regex: searchQuery, $options: 'i' } },
@@ -613,18 +602,16 @@ exports.getHistory = async (req, res, next) => {
       ];
 
       if (query.$or) {
-        // If the cursor already created an $or, we must wrap both in an $and
         query.$and = [
           { $or: query.$or },
           { $or: searchOr }
         ];
-        delete query.$or; // Clean up the top-level $or
+        delete query.$or;
       } else {
         query.$or = searchOr;
       }
     }
 
-    // Exclude reversed originals and their reversal entries
     const reversalScope = accountId
       ? { userId: new mongoose.Types.ObjectId(userId), accountId: new mongoose.Types.ObjectId(accountId) }
       : { userId: new mongoose.Types.ObjectId(userId) };
@@ -642,7 +629,7 @@ exports.getHistory = async (req, res, next) => {
 
     const history = await Ledger.find(query)
       .populate('accountId', 'name')
-      .sort({ createdAt: -1, _id: -1 })
+      .sort({ transactedAt: -1, _id: -1 })  // FIX 4: sort by transactedAt
       .limit(parsedLimit)
       .lean();
 
@@ -730,6 +717,11 @@ exports.voidTransaction = async (req, res, next) => {
         return errRes(res, 400, 'Voiding this transaction would result in a negative balance');
       }
 
+      if (newReserved.isNegative()) {
+        await session.abortTransaction();
+        return errRes(res, 400, 'Voiding this transaction would result in a negative reserved balance');
+      }
+
       ledger.status = 'VOIDED';
       await ledger.save({ session });
 
@@ -786,7 +778,7 @@ exports.voidTransaction = async (req, res, next) => {
 
 // ─── 5. getLatestTransactions ─────────────────────────────────────────────────
 //
-// Returns the 5 most recent settled transactions for the home screen widget.
+// Returns the 10 most recent settled transactions for the home screen widget.
 // Reversal entries and their reversed originals are excluded so the list
 exports.getLatestTransactions = async (req, res, next) => {
   try {
@@ -813,7 +805,7 @@ exports.getLatestTransactions = async (req, res, next) => {
     const latestTransactions = await Ledger.find(query)
       .populate('accountId', 'name')
       .sort({ createdAt: -1, _id: -1 })
-      .limit(5)
+      .limit(10)
       .lean();
 
     return res.status(200).json({
@@ -858,6 +850,7 @@ exports.reserveFunds = async (req, res, next) => {
     if (!['RESERVE', 'RELEASE'].includes(input.action)) {
       throw new Error("action must be 'RESERVE' or 'RELEASE'");
     }
+
   } catch (error) {
     return errRes(res, 400, error.message);
   }
@@ -936,10 +929,6 @@ exports.reserveFunds = async (req, res, next) => {
 
       account.availableBalance = toDecimal128(newAvailable);
       account.reservedBalance = toDecimal128(newReserved);
-
-      console.log('moveAmount:', moveAmount.toString());
-console.log('newAvailable:', newAvailable.toString());
-console.log('newReserved:', newReserved.toString());
       await account.save({ session });
 
       await session.commitTransaction();

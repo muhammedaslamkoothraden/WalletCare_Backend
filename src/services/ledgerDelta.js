@@ -38,6 +38,12 @@ case 'GOAL_ALLOCATION':
 case 'GOAL_DEALLOCATION':
   return { balanceChange: amount, reservedChange: zero };
 
+  case 'ACCOUNT_TRANSFER_IN':
+      return { balanceChange: amount, reservedChange: zero };
+
+      case 'ACCOUNT_TRANSFER_OUT':
+      return { balanceChange: amount.negated(), reservedChange: zero };
+
 case 'RESERVED_IN':
   return { balanceChange: amount.negated(), reservedChange: amount };
 

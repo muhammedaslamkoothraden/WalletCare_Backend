@@ -157,8 +157,9 @@ exports.depositToGoal = async (req, res) => {
                 transactionType: 'EXPENSE',
                 direction: 'GOAL_ALLOCATION',
                 category: goal.category,
-                description: isNowAchieved ? `Goal Completed: ${goal.title}` : `Saved to ${goal.title}`,
-                status: 'COMPLETED',
+                description: isNowAchieved
+                    ? `🏆 Achieved: ${goal.title}`
+                    : `Progress toward ${goal.title}`,
                 idempotencyKey,
                 transactedAt: tDate,
                 runningBalance: mongoose.Types.Decimal128.fromString(account.availableBalance.toString())
@@ -235,8 +236,8 @@ exports.withdrawFromGoal = async (req, res) => {
                 amount: mongoose.Types.Decimal128.fromString(withdrawAmount.toFixed(2)),
                 transactionType: 'INCOME',
                 direction: 'GOAL_DEALLOCATION',
-                category: 'Withdrawal',
-                description: `Withdrawn from ${goal.title} to ${account.name}`,
+                category: goal.category,
+                description: `Funds from ${goal.title}`,
                 status: 'COMPLETED',
                 idempotencyKey,
                 transactedAt: tDate,
