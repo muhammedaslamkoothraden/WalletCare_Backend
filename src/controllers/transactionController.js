@@ -805,7 +805,7 @@ exports.getLatestTransactions = async (req, res, next) => {
     const latestTransactions = await Ledger.find(query)
       .populate('accountId', 'name')
       .sort({ createdAt: -1, _id: -1 })
-      .limit(10)
+      .limit(6)
       .lean();
 
     return res.status(200).json({
