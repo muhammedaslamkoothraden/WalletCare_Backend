@@ -1,6 +1,3 @@
-const Goal = require("../models/Goal");
-const { createNotification } = require("../services/notification.service");
-
 exports.sendGoalReminders = async () => {
   const goals = await Goal.find({
     status: "active",
@@ -8,17 +5,17 @@ exports.sendGoalReminders = async () => {
   });
 
   const today = new Date();
-  const dayOfWeek = today.getDay(); // 0 is Sunday, 1 is Monday...
-  const dateOfMonth = today.getDate(); // 1-31
+  const dayOfWeek = today.getDay();
+  const dateOfMonth = today.getDate();
 
   for (const goal of goals) {
     let shouldSend = false;
 
     if (goal.reminderFrequency === "daily") {
       shouldSend = true;
-    } else if (goal.reminderFrequency === "weekly" && dayOfWeek === 1) { // Monday
+    } else if (goal.reminderFrequency === "weekly" && dayOfWeek === 1) {
       shouldSend = true;
-    } else if (goal.reminderFrequency === "monthly" && dateOfMonth === 1) { // 1st of month
+    } else if (goal.reminderFrequency === "monthly" && dateOfMonth === 1) {
       shouldSend = true;
     }
 
@@ -26,13 +23,12 @@ exports.sendGoalReminders = async () => {
       try {
         await createNotification(
           goal.userId,
-          `Reminder: Save money for goal "${goal.title}".`,
-          "goal_reminder",
-          { title: "Goal Reminder" },
-          null
+          `Reminder: Save money for your goal "${goal.title}".`,
+          "goal_reminder"
+          // no overrides needed — TYPE_MAP already sets the correct title
         );
       } catch (e) {
-        console.error("Goal reminder error:", e.message);
+        console.error("[GoalReminder] Notification failed:", e.message);
       }
     }
   }

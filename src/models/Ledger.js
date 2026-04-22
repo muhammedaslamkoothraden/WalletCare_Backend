@@ -5,12 +5,11 @@ const Decimal = require('decimal.js');
 
 // ─── State Machine ────────────────────────────────────────────────────────────
 // Defines the only permitted status progressions.
-// COMPLETED and VOIDED are terminal — no further transitions allowed.
+// COMPLETED is terminal — no further transitions allowed.
 const VALID_TRANSITIONS = {
-  PENDING:   ['COMPLETED', 'FAILED'],
-  COMPLETED: ['VOIDED'],
-  FAILED:    [],
-  VOIDED:    [],
+  PENDING: ['COMPLETED', 'FAILED'],
+  COMPLETED: [],
+  FAILED: [],
 };
 
 // ─── Structural Rules ─────────────────────────────────────────────────────────
@@ -188,7 +187,7 @@ const LedgerSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
-      minlength: [8,   'idempotencyKey must be at least 8 characters'],
+      minlength: [8, 'idempotencyKey must be at least 8 characters'],
       maxlength: [128, 'idempotencyKey cannot exceed 128 characters'],
     },
 
@@ -232,14 +231,14 @@ const LedgerSchema = new mongoose.Schema(
     // state machine in pre-save. Transitions are one-way and irreversible.
     status: {
       type: String,
-      enum: ['PENDING', 'COMPLETED', 'FAILED', 'VOIDED'],
+      enum: ['PENDING', 'COMPLETED', 'FAILED'],
       default: 'COMPLETED',
     },
   },
   {
     timestamps: true,
-    toJSON:     { getters: true },
-    toObject:   { getters: true },
+    toJSON: { getters: true },
+    toObject: { getters: true },
     // Mongoose optimistic concurrency — increments __v on every save and
     // rejects stale writes with a VersionError, preventing lost updates
     // under concurrent modification.
@@ -344,7 +343,7 @@ LedgerSchema.pre('save', async function () {
   }
 
   // ── Terminal state freeze ──────────────────────────────────────────────────
-  if (['COMPLETED', 'VOIDED', 'FAILED'].includes(this.status)) {
+  if (['COMPLETED', 'FAILED'].includes(this.status)) {
     throw new Error('Finalized ledger entries are immutable');
   }
 });

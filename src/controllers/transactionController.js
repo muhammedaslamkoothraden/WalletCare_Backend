@@ -563,55 +563,55 @@ exports.getHistory = async (req, res, next) => {
     const userId = req.user.id;
     const { accountId, category, limit = 20, lastId, status, startDate, endDate, type, searchQuery } = req.query;
 
-    const query = { userId: new mongoose.Types.ObjectId(userId) };
-    query.status = VALID_STATUSES.has(status) ? status : 'COMPLETED';
+    const filters = [];
+
+    // Base filters
+    filters.push({ userId: new mongoose.Types.ObjectId(userId) });
+    filters.push({ status: VALID_STATUSES.has(status) ? status : 'COMPLETED' });
+    filters.push({ direction: { $ne: 'REVERSAL' } });
 
     if (accountId) {
       if (!mongoose.Types.ObjectId.isValid(accountId)) return errRes(res, 400, 'Invalid accountId');
-      query.accountId = new mongoose.Types.ObjectId(accountId);
+      filters.push({ accountId: new mongoose.Types.ObjectId(accountId) });
     }
 
-    // FIX 1: typo fixed (createdA → transactedAt) + FIX 2: use transactedAt for date filter
     if (startDate || endDate) {
-      query.transactedAt = {};
-      if (startDate) query.transactedAt.$gte = new Date(startDate);
-      if (endDate) query.transactedAt.$lte = new Date(endDate);
+      const dateFilter = {};
+      if (startDate) dateFilter.$gte = new Date(startDate);
+      if (endDate) dateFilter.$lte = new Date(endDate);
+      filters.push({ transactedAt: dateFilter });
     }
 
-    if (category) query.category = sanitizeCategory(category);
+    if (category) filters.push({ category: sanitizeCategory(category) });
+    if (type) filters.push({ transactionType: type.toUpperCase() });
 
-    if (type) {
-      query.transactionType = type.toUpperCase();
-    }
-
-    // FIX 3: cursor pagination uses transactedAt
+    // Cursor pagination — always safe, never conflicts with other filters
     if (lastId) {
       const lastTx = await Ledger.findById(lastId).select('transactedAt').lean();
       if (lastTx) {
-        query.$or = [
-          { transactedAt: { $lt: lastTx.transactedAt } },
-          { transactedAt: lastTx.transactedAt, _id: { $lt: new mongoose.Types.ObjectId(lastId) } },
-        ];
+        filters.push({
+          $or: [
+            { transactedAt: { $lt: lastTx.transactedAt } },
+            { transactedAt: lastTx.transactedAt, _id: { $lt: new mongoose.Types.ObjectId(lastId) } },
+          ],
+        });
       }
     }
 
+    // Search — always safe, never conflicts with cursor
     if (searchQuery) {
-      const searchOr = [
-        { category: { $regex: searchQuery, $options: 'i' } },
-        { description: { $regex: searchQuery, $options: 'i' } }
-      ];
-
-      if (query.$or) {
-        query.$and = [
-          { $or: query.$or },
-          { $or: searchOr }
-        ];
-        delete query.$or;
-      } else {
-        query.$or = searchOr;
-      }
+      filters.push({
+        $or: [
+          { category: { $regex: searchQuery, $options: 'i' } },
+          { description: { $regex: searchQuery, $options: 'i' } },
+        ],
+      });
     }
 
+    // Build final query using $and — multiple $or conditions coexist safely
+    const query = { $and: filters };
+
+    // Reversal exclusion
     const reversalScope = accountId
       ? { userId: new mongoose.Types.ObjectId(userId), accountId: new mongoose.Types.ObjectId(accountId) }
       : { userId: new mongoose.Types.ObjectId(userId) };
@@ -622,14 +622,12 @@ exports.getHistory = async (req, res, next) => {
       parentTransactionId: { $ne: null },
     });
 
-    query.direction = { $ne: 'REVERSAL' };
     const reversedSet = new Set(reversedParentIds.map(id => id.toString()));
-
     const parsedLimit = Math.min(parseInt(limit, 10) || 20, 100);
 
     const history = await Ledger.find(query)
       .populate('accountId', 'name')
-      .sort({ transactedAt: -1, _id: -1 })  // FIX 4: sort by transactedAt
+      .sort({ transactedAt: -1, _id: -1 })
       .limit(parsedLimit)
       .lean();
 
@@ -640,7 +638,7 @@ exports.getHistory = async (req, res, next) => {
     return res.status(200).json({
       success: true,
       count: history.length,
-      nextCursor: nextCursor,
+      nextCursor,
       data: history.map(tx => ({
         ...formatLedgerEntry(tx),
         isCancelled: reversedSet.has(tx._id.toString()),
@@ -649,130 +647,6 @@ exports.getHistory = async (req, res, next) => {
 
   } catch (error) {
     return next(error);
-  }
-};
-// ─── 4. voidTransaction ───────────────────────────────────────────────────────
-//
-// Marks a COMPLETED ledger entry as VOIDED and reverses its balance impact.
-// Unlike REVERSAL, VOID does not create a new ledger entry — it mutates the
-// status of the original. Use only for pre-settlement corrections.
-
-exports.voidTransaction = async (req, res, next) => {
-  const { transactionId } = req.params;
-  const userId = req.user.id;
-
-  if (!mongoose.Types.ObjectId.isValid(transactionId)) {
-    return errRes(res, 400, 'Invalid transactionId');
-  }
-
-  const MAX_RETRIES = 3;
-
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
-    try {
-      const ledger = await Ledger.findOne({ _id: transactionId, userId }).session(session);
-      if (!ledger) {
-        await session.abortTransaction();
-        return errRes(res, 404, 'Transaction not found');
-      }
-      if (ledger.status !== 'COMPLETED') {
-        await session.abortTransaction();
-        return errRes(res, 400, `Only COMPLETED transactions can be voided. Current status: '${ledger.status}'`);
-      }
-      if (ledger.transferGroupId) {
-        await session.abortTransaction();
-        return errRes(res, 400, 'Cannot void a transfer directly. Use REVERSAL to undo a transfer.');
-      }
-
-      const existingReversal = await Ledger.findOne({
-        userId,
-        direction: 'REVERSAL',
-        parentTransactionId: ledger._id,
-      }).session(session).lean();
-
-      if (existingReversal) {
-        await session.abortTransaction();
-        return errRes(res, 400, 'Cannot void a transaction that has already been reversed');
-      }
-
-      const account = await Account.findOne({ _id: ledger.accountId, userId }).session(session);
-      if (!account) {
-        await session.abortTransaction();
-        return errRes(res, 404, 'Account not found');
-      }
-
-      const { balanceChange, reservedChange } = computeReversalDelta(
-        ledger.direction,
-        ledger.transactionType,
-        ledger.amount.toString()
-      );
-
-      const newAvailable = new Decimal(account.availableBalance.toString()).plus(balanceChange);
-      const newReserved = new Decimal(account.reservedBalance.toString()).plus(reservedChange);
-
-      if (newAvailable.isNegative()) {
-        await session.abortTransaction();
-        return errRes(res, 400, 'Voiding this transaction would result in a negative balance');
-      }
-
-      if (newReserved.isNegative()) {
-        await session.abortTransaction();
-        return errRes(res, 400, 'Voiding this transaction would result in a negative reserved balance');
-      }
-
-      ledger.status = 'VOIDED';
-      await ledger.save({ session });
-
-      account.availableBalance = toDecimal128(newAvailable);
-      account.reservedBalance = toDecimal128(newReserved);
-      await account.save({ session });
-
-      // Synchronise goal progress if the voided entry was goal-linked.
-      if (ledger.goalId) {
-        const goal = await Goal.findOne({ _id: ledger.goalId, userId }).session(session);
-        if (goal) {
-          const amt = new Decimal(ledger.amount.toString());
-          if (ledger.direction === 'GOAL_ALLOCATION') {
-            const newAmt = new Decimal(goal.currentAmount.toString()).minus(amt);
-            goal.currentAmount = newAmt.toNumber();
-            if (newAmt.lessThan(goal.targetAmount)) goal.status = 'active';
-          } else if (ledger.direction === 'GOAL_DEALLOCATION') {
-            const newAmt = new Decimal(goal.currentAmount.toString()).plus(amt);
-            goal.currentAmount = newAmt.toNumber();
-            if (newAmt.greaterThanOrEqualTo(goal.targetAmount)) goal.status = 'completed';
-          }
-          await goal.save({ session });
-        }
-      }
-
-      await session.commitTransaction();
-      reconcileAfterTransaction(ledger.accountId.toString(), userId);
-
-      return res.status(200).json({
-        success: true,
-        txid: ledger._id,
-        status: 'VOIDED',
-        availableBalance: newAvailable.toFixed(2),
-        reservedBalance: newReserved.toFixed(2),
-      });
-
-    } catch (error) {
-      if (session.inTransaction()) await session.abortTransaction().catch(() => { });
-
-      const isVersionError = error.name === 'VersionError';
-      const isWriteConflict = error.code === 112 || error.hasErrorLabel?.('TransientTransactionError');
-
-      if ((isVersionError || isWriteConflict) && attempt < MAX_RETRIES) {
-        await new Promise((r) => setTimeout(r, Math.random() * 50 * attempt));
-        continue;
-      }
-
-      return next(error);
-    } finally {
-      session.endSession();
-    }
   }
 };
 

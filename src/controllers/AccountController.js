@@ -209,7 +209,7 @@ exports.createAccount = async (req, res) => {
 
 exports.setAccountAsDefault = async (req, res) => {
   const session = await mongoose.startSession();
-  
+
   try {
     session.startTransaction();
     const userId = req.user.id;
@@ -221,10 +221,10 @@ exports.setAccountAsDefault = async (req, res) => {
     }
 
     // 1. Verify the account exists, belongs to the user, and isn't closed
-    const target = await Account.findOne({ 
-      _id: accountId, 
-      userId: userId, 
-      status: { $ne: 'CLOSED' } 
+    const target = await Account.findOne({
+      _id: accountId,
+      userId: userId,
+      status: { $ne: 'CLOSED' }
     }).session(session);
 
     if (!target) {
@@ -260,9 +260,9 @@ exports.setAccountAsDefault = async (req, res) => {
     console.error("Set Default Error:", error);
 
     if (error.code === 11000) {
-        return res.status(409).json({ success: false, error: 'Concurrent request conflict — please retry' });
+      return res.status(409).json({ success: false, error: 'Concurrent request conflict — please retry' });
     }
-    
+
     return res.status(500).json({ success: false, error: 'Failed to update default account' });
   } finally {
     session.endSession();
@@ -304,9 +304,9 @@ exports.deleteAccount = async (req, res) => {
     // ─── HARD DELETE THE ACCOUNT ───
     await account.deleteOne({ session });
 
-    // Optional: If you also want to permanently delete all transactions tied to this account
-    // to prevent orphaned data in your database, uncomment the line below:
-    // await Transaction.deleteMany({ accountId: account._id }).session(session);
+    // Ledger entries are intentionally preserved after account deletion.
+    // The ledger is append-only and immutable — entries are never deleted.
+    // Orphaned ledger entries remain as a permanent audit trail.
 
     // Reassign the default account if the deleted one was the default
     if (wasDefault) {
@@ -405,7 +405,7 @@ exports.updateAccount = async (req, res) => {
 
     // 🛑 2. Temporarily send the real error message to the Flutter app!
     return errRes(res, 500, error.message || 'Failed to update account');
-    
+
   } finally {
     session.endSession();
   }

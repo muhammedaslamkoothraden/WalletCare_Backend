@@ -46,78 +46,67 @@ async function sendHybridNotification(userId, message, title, category, typeInfo
     type: typeInfo.type,
   });
 
-  const user = await User.findById(userId).select("fcmToken");
-
   // 2. Foreground / Real-Time: Emit to WebSocket Room
   let isOnline = false;
   try {
     isOnline = socketService.isUserOnline(userId);
     socketService.sendNotification(userId, notification.toObject());
   } catch (socketErr) {
-    console.warn('WebSocket push failed', { error: socketErr.message, userId });
+    console.warn('[notify] WebSocket push failed', { error: socketErr.message, userId });
   }
 
-  // 3. ALWAYS emit FCM Push (OS manages background display natively, Flutter handles dupes locally)
-  if (isFirebaseInitialized && user && user.fcmToken) {
-    const fcmPayload = {
-      token: user.fcmToken,
-      // The 'notification' object makes the OS natively show the system banner
-      notification: {
-        title: title,
-        body: message,
-      },
-      // The 'data' object passes routing rules to Flutter's navigatorKey
-      data: {
-        route: '/main', // You can map specialized routes string based on `category` here
-        notificationId: String(notification._id),
-        click_action: "FLUTTER_NOTIFICATION_CLICK"
-      },
-      android: {
-        priority: "high",
+  // 3. FCM Push — user fetch moved inside this block
+  // Only query the DB for fcmToken when Firebase is initialized
+  // No point fetching if Firebase isn't ready
+  if (isFirebaseInitialized) {
+    const user = await User.findById(userId).select('fcmToken').lean();
+
+    if (user?.fcmToken) {
+      const fcmPayload = {
+        token: user.fcmToken,
         notification: {
-          channelId: "high_importance_channel",
-          priority: "high"
-        }
-      },
-      apns: {
-        headers: {
-          "apns-priority": "10"
+          title,
+          body: message,
         },
-        payload: {
-          aps: {
-            sound: "default",
-            contentAvailable: true
-          }
+        data: {
+          route: '/main',
+          notificationId: String(notification._id),
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'high_importance_channel',
+            priority: 'high',
+          },
+        },
+        apns: {
+          headers: { 'apns-priority': '10' },
+          payload: {
+            aps: {
+              sound: 'default',
+              contentAvailable: true,
+            },
+          },
+        },
+      };
+
+      try {
+        await admin.messaging().send(fcmPayload);
+        console.log('[notify] FCM push sent', { userId });
+      } catch (fcmErr) {
+        console.error('[notify] FCM push failed', { code: fcmErr.code, userId });
+
+        if (
+          fcmErr.code === 'messaging/invalid-registration-token' ||
+          fcmErr.code === 'messaging/registration-token-not-registered'
+        ) {
+          console.warn('[notify] Dead FCM token removed', { userId });
+          await User.findByIdAndUpdate(userId, { fcmToken: null });
         }
-      }
-    };
-
-    try {
-      await admin.messaging().send(fcmPayload);
-      console.log('FCM push sent', { userId });
-    } catch (fcmErr) {
-      console.error('FCM push failed', { code: fcmErr.code, userId });
-
-      // ERROR HANDLING: Cleanup dead or invalid tokens automatically
-      if (
-        fcmErr.code === 'messaging/invalid-registration-token' ||
-        fcmErr.code === 'messaging/registration-token-not-registered'
-      ) {
-        console.warn('Dead FCM token removed', { userId });
-        await User.findByIdAndUpdate(userId, { fcmToken: null });
       }
     }
   }
 
   return notification;
 }
-
-exports.createNotification = async (userId, message, typeKey, overrides = {}) => {
-  const key = (typeKey || "").toLowerCase().replace(/-/g, "_");
-  const mapped = TYPE_MAP[key] || TYPE_MAP["system_info"];
-
-  const title = overrides.title || mapped.title;
-  const category = overrides.category || mapped.category;
-
-  return await sendHybridNotification(userId, message, title, category, mapped);
-};
