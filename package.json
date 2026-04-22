@@ -38,5 +38,6 @@
   "bugs": {
     "url": "https://github.com/muhammedaslamkoothraden/WalletCare_Backend/issues"
   },
-  "homepage": "https://github.com/muhammedaslamkoothraden/WalletCare_Backend#readme"
+  "homepage": "https://github.com/muhammedaslamkoothraden/WalletCare_Backend#readme",
+  "devDependencies": {}
 }
