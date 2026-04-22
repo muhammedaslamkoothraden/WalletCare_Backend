@@ -18,6 +18,16 @@ const getStats = async (req, res) => {
       scheduledDeletionAt: { $ne: null },
     });
 
+    // Calculate average user rating from User collection
+    const userRatingResult = await User.aggregate([
+      { $match: { role: "user", rating: { $ne: null } } },
+      { $group: { _id: null, avgUserRating: { $avg: "$rating" } } },
+    ]);
+
+    const avgUserRating = userRatingResult.length > 0
+      ? parseFloat(userRatingResult[0].avgUserRating.toFixed(1))
+      : null;
+
     return res.status(200).json({
       success: true,
       data: {
@@ -28,6 +38,7 @@ const getStats = async (req, res) => {
         totalAdmins,
         totalFeedbacks,
         scheduledForDeletion,
+        avgUserRating,
       },
     });
   } catch (error) {
