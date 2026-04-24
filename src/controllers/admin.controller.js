@@ -155,16 +155,23 @@ const logoutAllAdminSessions = async (req, res) => {
 // GET /api/admin/users
 const getAllUsers = async (req, res) => {
   try {
+    const onlineThreshold = new Date(Date.now() - 60 * 1000); // 1 minute
+
     const users = await User.find({ 
-      role: { $in: ["user", "admin"] }  // Only user and admin
+      role: { $in: ["user", "admin"] }
     })
       .select("-password -refreshToken")
       .sort({ createdAt: -1 });
 
+    const usersWithStatus = users.map((u) => ({
+      ...u.toObject(),
+      isOnline: u.lastActiveAt ? u.lastActiveAt > onlineThreshold : false,
+    }));
+
     return res.status(200).json({
       success: true,
-      count: users.length,
-      data: users,
+      count: usersWithStatus.length,
+      data: usersWithStatus,
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: "Server error" });
@@ -892,16 +899,23 @@ const createAdmin = async (req, res) => {
 // GET /api/admin/admins - Get all admins
 const getAllAdmins = async (req, res) => {
   try {
+    const onlineThreshold = new Date(Date.now() - 60 * 1000); // 1 minute
+
     const admins = await User.find({ 
       role: { $in: ["admin", "superadmin"] } 
     })
       .select("-password -refreshToken")
       .sort({ createdAt: -1 });
 
+    const adminsWithStatus = admins.map((a) => ({
+      ...a.toObject(),
+      isOnline: a.lastActiveAt ? a.lastActiveAt > onlineThreshold : false,
+    }));
+
     return res.status(200).json({
       success: true,
-      count: admins.length,
-      data: admins,
+      count: adminsWithStatus.length,
+      data: adminsWithStatus,
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: "Server error" });
@@ -1008,6 +1022,16 @@ const deleteAdmin = async (req, res) => {
   }
 };
 
+// PATCH /api/admin/heartbeat — updates lastActiveAt for the logged-in admin/user
+const heartbeat = async (req, res) => {
+  try {
+    await User.findByIdAndUpdate(req.user._id, { lastActiveAt: new Date() });
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
 module.exports = {
   getStats,
   getAdminProfile,
@@ -1035,4 +1059,5 @@ module.exports = {
   getAllAdmins,
   demoteAdmin,
   deleteAdmin,
+  heartbeat,
 };

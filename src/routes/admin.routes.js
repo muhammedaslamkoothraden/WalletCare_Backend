@@ -9,6 +9,9 @@ router.use(adminMiddleware);
 // Stats
 router.get("/stats", adminController.getStats);
 
+// Heartbeat — updates lastActiveAt for the logged-in user/admin
+router.patch("/heartbeat", adminController.heartbeat);
+
 // Admin own profile & account management
 router.get("/profile", adminController.getAdminProfile);
 router.patch("/profile", adminController.updateAdminProfile);

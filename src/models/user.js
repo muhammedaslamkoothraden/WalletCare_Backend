@@ -14,6 +14,7 @@ const userSchema = new mongoose.Schema(
     scheduledDeletionAt: { type: Date, default: null },
     rating: { type: Number, min: 1, max: 5, default: null },
     isBanned: { type: Boolean, default: false },
+    lastActiveAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
