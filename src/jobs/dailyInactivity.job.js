@@ -1,6 +1,5 @@
 const { User } = require("../models/user");
 const Account = require("../models/Account");
-// CHANGED: import Notification model for same-day dedup guard
 const { Notification } = require("../models/Notification");
 const { admin, isFirebaseInitialized } = require("../config/firebase");
 
@@ -51,8 +50,9 @@ exports.checkDailyInactivity = async () => {
                 continue;
             }
 
-            // CHANGED: FCM-only push — no socket emit, no DB notification document needed
-            // Save a lightweight record only to support the dedup guard on next run
+            // Save a lightweight DB record only to support the same-day dedup
+            // guard on next run. No Socket.IO emit — this notification is
+            // specifically for users who are NOT in the app right now.
             try {
                 await Notification.create({
                     userId: user._id,
@@ -63,10 +63,9 @@ exports.checkDailyInactivity = async () => {
                 });
             } catch (dbErr) {
                 console.warn(`[dailyInactivity] Failed to save dedup record for ${user._id}:`, dbErr.message);
-                // Do not skip FCM even if DB record fails
             }
 
-            // CHANGED: FCM-only push, guarded by token existence check
+            // FCM push — reaches the user even when app is backgrounded or closed
             if (isFirebaseInitialized && user.fcmToken) {
                 try {
                     await admin.messaging().send({
@@ -95,7 +94,16 @@ exports.checkDailyInactivity = async () => {
                     });
                     console.log(`[dailyInactivity] FCM sent to user ${user._id}`);
                 } catch (fcmErr) {
-                    console.error(`[dailyInactivity] FCM failed for user ${user._id}:`, fcmErr.code || fcmErr.message);
+                    // Clear stale token so future sends don't waste FCM quota
+                    if (
+                        fcmErr.code === 'messaging/registration-token-not-registered' ||
+                        fcmErr.code === 'messaging/invalid-registration-token'
+                    ) {
+                        await User.findByIdAndUpdate(user._id, { fcmToken: null });
+                        console.warn(`[dailyInactivity] Dead FCM token cleared for user ${user._id}`);
+                    } else {
+                        console.error(`[dailyInactivity] FCM failed for user ${user._id}:`, fcmErr.code || fcmErr.message);
+                    }
                 }
             }
         }
