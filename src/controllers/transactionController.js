@@ -384,6 +384,11 @@ exports.processTransaction = async (req, res, next) => {
       }
 
       // ── Balance delta computation ───────────────────────────────────────────
+      // Read minBalance here — before account.save() — to avoid Mongoose
+      // resetting the Decimal128 getter on the document after the write.
+      const minBalance = new Decimal(account.minBalance?.toString() || '0');
+      const accountName = account.name || 'Account';
+
       const currentAvailable = new Decimal(account.availableBalance.toString());
 
       const { balanceChange, reservedChange } = direction === 'REVERSAL'
@@ -448,13 +453,13 @@ exports.processTransaction = async (req, res, next) => {
       reconcileAfterTransaction(accountId, userId);
 
       // ── Fire-and-forget notifications — non-blocking, never throws ─────────
-      const isExpense = transactionType === 'EXPENSE';
-      const isTransfer = TRANSFER_DIRECTIONS.has(direction);
       const amountDecimal = new Decimal(safeAmount.toString());
-      const minBalance = new Decimal(account.minBalance?.toString() || '0');
-      const accountName = account.name || 'Account';
 
-      if (isExpense && minBalance.greaterThan(0) && newAvailable.lessThan(minBalance)) {
+      // Trigger on any direction that reduces availableBalance past minBalance:
+      // EXPENSE (STANDARD/GOAL_ALLOCATION/GOAL_COMPLETION) and TRANSFER_OUT.
+      // minBalance and accountName were read before account.save() above.
+      const balanceDecreased = balanceChange.isNegative();
+      if (balanceDecreased && minBalance.greaterThan(0) && newAvailable.lessThan(minBalance)) {
         createNotification(
           userId,
           `Balance Alert: '${accountName}' is below the minimum threshold. Current balance: ₹${newAvailable.toFixed(2)}.`,

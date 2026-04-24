@@ -4,8 +4,8 @@ const Account = require("../models/Account");
 const { Notification } = require("../models/Notification");
 const { admin, isFirebaseInitialized } = require("../config/firebase");
 
-// CHANGED: inactivity threshold — notify users who have had no transaction in the last 3 days
-const INACTIVITY_DAYS = 3;
+// Notify users who have had no transaction today (since midnight)
+const INACTIVITY_DAYS = 1;
 
 exports.checkDailyInactivity = async () => {
     console.log("Running Daily Inactivity Check...");
@@ -22,7 +22,7 @@ exports.checkDailyInactivity = async () => {
         for (const user of users) {
             // GUARDBAND: newly created users cannot be "inactive for 3 days" if they haven't existed for 3 days.
             if (user.createdAt && user.createdAt > inactivityThreshold) {
-                console.log(`[dailyInactivity] Skipping user ${user._id} — Account is less than 3 days old.`);
+                console.log(`[dailyInactivity] Skipping user ${user._id} — Account is less than 1 day old.`);
                 continue;
             }
 
@@ -57,7 +57,7 @@ exports.checkDailyInactivity = async () => {
                 await Notification.create({
                     userId: user._id,
                     title: "Daily Reminder 💡",
-                    message: `You haven't recorded any transactions in the last ${INACTIVITY_DAYS} days. Stay on track with WalletCare!`,
+                    message: `You haven't recorded any transactions today. Stay on top of your finances with WalletCare!`,
                     category: "SYSTEM",
                     type: "INACTIVITY_REMINDER",
                 });
@@ -73,7 +73,7 @@ exports.checkDailyInactivity = async () => {
                         token: user.fcmToken,
                         notification: {
                             title: "Daily Reminder 💡",
-                            body: `You haven't recorded any transactions in the last ${INACTIVITY_DAYS} days. Stay on track!`,
+                            body: `You haven't recorded any transactions today. Stay on top of your finances!`,
                         },
                         data: {
                             route: "/main",

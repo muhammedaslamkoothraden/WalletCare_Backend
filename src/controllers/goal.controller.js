@@ -141,6 +141,13 @@ exports.depositToGoal = async (req, res) => {
                 throw conflictError;
             }
 
+            // Read minBalance before updateAvailableBalance mutates the document —
+            // same stale-getter issue as transactionController.
+            const accountForMeta = await Account.findOne({ _id: accountId, userId: req.user.id }).session(session);
+            if (!accountForMeta) throw new Error('Account not found');
+            const minBalance = new Decimal(accountForMeta.minBalance?.toString() || '0');
+            const accountName = accountForMeta.name || 'Account';
+
             const account = await updateAvailableBalance(accountId, req.user.id, depositAmount.negated(), session);
 
             const currentAmt = new Decimal(goal.currentAmount.toString());
@@ -175,8 +182,18 @@ exports.depositToGoal = async (req, res) => {
 
             const justFinished = isNowAchieved && currentAmt.lessThan(targetAmt);
 
-            return { goal, account, ledgerId: ledger._id, justFinished };
+            const newAvailable = new Decimal(account.availableBalance.toString());
+            return { goal, account, ledgerId: ledger._id, justFinished, minBalance, accountName, newAvailable };
         });
+
+        // Low balance notification — fires after commit, non-blocking
+        if (result.minBalance.greaterThan(0) && result.newAvailable.lessThan(result.minBalance)) {
+            createNotification(
+                req.user.id,
+                `Balance Alert: '${result.accountName}' is below the minimum threshold. Current balance: ₹${result.newAvailable.toFixed(2)}.`,
+                'low_balance'
+            ).catch((e) => console.warn('[notify] Low balance notification failed:', e.message));
+        }
 
         if (result.justFinished) {
             createNotification(
