@@ -303,16 +303,18 @@ const restoreUser = async (req, res) => {
 };
 
 // GET /api/admin/analytics/users
+// Query params: ?months=N (default: 6)
 const getUserAnalytics = async (req, res) => {
   try {
-    const sixMonthsAgo = new Date();
-    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const months = parseInt(req.query.months) || 6;
+    const startDate = new Date();
+    startDate.setMonth(startDate.getMonth() - months);
 
     const userGrowth = await User.aggregate([
       {
         $match: {
-          role: "user",
-          createdAt: { $gte: sixMonthsAgo },
+          role: { $in: ["user", "admin"] },
+          createdAt: { $gte: startDate },
         },
       },
       {
