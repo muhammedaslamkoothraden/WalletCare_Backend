@@ -1,3 +1,8 @@
+'use strict';
+
+const Goal = require('../models/Goal');
+const { createNotification } = require('../services/notification.service');
+
 exports.sendGoalReminders = async () => {
   const goals = await Goal.find({
     status: "active",

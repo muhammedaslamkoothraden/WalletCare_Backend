@@ -25,17 +25,12 @@ const TYPE_MAP = {
   system_info: { type: "SYSTEM_INFO", category: "SYSTEM", title: "System Notification" },
 };
 
-/**
- * createNotification(userId, message, typeKey, [overrides])
- *
- * typeKey can be a shorthand (e.g. "goal_reminder") or a schema enum value.
- * overrides = { title, category } — optional, takes precedence.
- *
- * Emits a live socket event immediately after saving so Flutter updates instantly.
- */
-/**
- * Clean, Reusable Double-Emit Function
- */
+// ─── sendHybridNotification ───────────────────────────────────────────────────
+//
+// Low-level delivery function. Takes fully-resolved arguments — callers that
+// have already looked up title, category, and typeInfo can call this directly.
+// Most internal callers should use createNotification() below instead.
+
 async function sendHybridNotification(userId, message, title, category, typeInfo) {
   // 1. Save to DB for history
   const notification = await Notification.create({
@@ -110,3 +105,35 @@ async function sendHybridNotification(userId, message, title, category, typeInfo
 
   return notification;
 }
+
+// ─── createNotification ───────────────────────────────────────────────────────
+//
+// Public API used by all controllers and jobs.
+//
+// @param {ObjectId|string} userId   — recipient
+// @param {string}          message  — notification body text
+// @param {string}          typeKey  — shorthand key from TYPE_MAP (e.g. "low_balance")
+//                                     OR a raw schema enum value (e.g. "LOW_BALANCE")
+// @param {{ title?, category? }} [overrides] — optional, takes precedence over TYPE_MAP
+//
+// Throws if typeKey cannot be resolved — callers should .catch() and log,
+// never let a notification failure abort a financial transaction.
+
+async function createNotification(userId, message, typeKey, overrides = {}) {
+  // Resolve typeKey: try lowercase shorthand first, then uppercase schema value.
+  const normalizedKey = typeKey?.toLowerCase();
+  const typeInfo = TYPE_MAP[normalizedKey] ?? TYPE_MAP[typeKey];
+
+  if (!typeInfo) {
+    throw new Error(`[notify] Unknown typeKey: "${typeKey}". Add it to TYPE_MAP.`);
+  }
+
+  const title    = overrides.title    ?? typeInfo.title;
+  const category = overrides.category ?? typeInfo.category;
+
+  return sendHybridNotification(userId, message, title, category, typeInfo);
+}
+
+// ─── Exports ──────────────────────────────────────────────────────────────────
+
+module.exports = { createNotification, sendHybridNotification };
