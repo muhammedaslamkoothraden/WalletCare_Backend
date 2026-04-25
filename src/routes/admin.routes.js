@@ -42,6 +42,10 @@ router.delete("/feedback/:id", adminController.deleteFeedback);
 // Heartbeat — any authenticated admin/user pings this to mark themselves online
 router.patch("/heartbeat", adminController.heartbeat);
 
+// Notifications// Notifications
+router.post("/notifications/send", adminController.sendNotificationToUser);
+router.post("/notifications/broadcast", adminController.broadcastNotification);
+
 // ========== SUPERADMIN ONLY ROUTES ==========
 router.post("/create-admin", requireSuperAdmin, adminController.createAdmin);
 router.get("/admins", requireSuperAdmin, adminController.getAllAdmins);

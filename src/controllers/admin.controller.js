@@ -1029,6 +1029,100 @@ const deleteAdmin = async (req, res) => {
   }
 };
 
+
+const adminNotificationService = require("../services/adminNotification.service");
+
+// ================= SEND TO USER =================
+const sendNotificationToUser = async (req, res) => {
+  try {
+    const { userId, message, title } = req.body;
+
+    await adminNotificationService.sendToUser(userId, message, title);
+
+    return res.status(200).json({
+      success: true,
+      message: "Notification sent successfully",
+    });
+  } catch (error) {
+    console.error("sendNotificationToUser error:", error.message);
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ================= BROADCAST =================
+const broadcastNotification = async (req, res) => {
+  try {
+    const { message, title } = req.body;
+    const filter = req.query.filter;
+
+    const result = await adminNotificationService.broadcast(
+      filter,
+      message,
+      title
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Broadcast completed",
+      data: result,
+    });
+  } catch (error) {
+    console.error("broadcastNotification error:", error.message);
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ================= SEND TO ADMIN =================
+const sendNotificationToAdmin = async (req, res) => {
+  try {
+    const { adminId, message, title } = req.body;
+
+    await adminNotificationService.sendToAdmin(adminId, message, title);
+
+    return res.status(200).json({
+      success: true,
+      message: "Notification sent to admin",
+    });
+  } catch (error) {
+    console.error("sendNotificationToAdmin error:", error.message);
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// ================= BROADCAST TO ADMINS =================
+const broadcastToAdmins = async (req, res) => {
+  try {
+    const { message, title } = req.body;
+
+    const result = await adminNotificationService.broadcastAdmins(
+      message,
+      title
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Admin broadcast completed",
+      data: result,
+    });
+  } catch (error) {
+    console.error("broadcastToAdmins error:", error.message);
+    return res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
 module.exports = {
   getStats,
   getAdminProfile,
@@ -1051,6 +1145,11 @@ module.exports = {
   getGoalAnalytics,
   getAccountAnalytics,
   getUserOverview,
+  // Notification functions
+   sendNotificationToUser,
+  broadcastNotification,
+  sendNotificationToAdmin,
+  broadcastToAdmins,
   // Superadmin functions
   createAdmin,
   getAllAdmins,
