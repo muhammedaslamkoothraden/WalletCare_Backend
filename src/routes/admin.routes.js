@@ -9,9 +9,6 @@ router.use(adminMiddleware);
 // Stats
 router.get("/stats", adminController.getStats);
 
-// Heartbeat — updates lastActiveAt for the logged-in user/admin
-router.patch("/heartbeat", adminController.heartbeat);
-
 // Admin own profile & account management
 router.get("/profile", adminController.getAdminProfile);
 router.patch("/profile", adminController.updateAdminProfile);
@@ -41,6 +38,9 @@ router.get("/analytics/accounts", adminController.getAccountAnalytics);
 router.get("/feedback", adminController.getAllFeedback);
 router.get("/feedback/:id", adminController.getFeedbackById);
 router.delete("/feedback/:id", adminController.deleteFeedback);
+
+// Heartbeat — any authenticated admin/user pings this to mark themselves online
+router.patch("/heartbeat", adminController.heartbeat);
 
 // ========== SUPERADMIN ONLY ROUTES ==========
 router.post("/create-admin", requireSuperAdmin, adminController.createAdmin);

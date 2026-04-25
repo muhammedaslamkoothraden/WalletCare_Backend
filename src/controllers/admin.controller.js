@@ -4,6 +4,11 @@ const bcrypt = require("bcryptjs");
 const { generateAccessToken, generateRefreshToken } = require("../utils/token");
 const hashToken = require("../utils/hashToken");
 
+// Helper — user is online if pinged within last 60 seconds
+const ONLINE_THRESHOLD_MS = 60 * 1000;
+const isOnline = (lastActiveAt) =>
+  lastActiveAt && (Date.now() - new Date(lastActiveAt).getTime()) < ONLINE_THRESHOLD_MS;
+
 // GET /api/admin/stats
 const getStats = async (req, res) => {
   try {
@@ -155,23 +160,18 @@ const logoutAllAdminSessions = async (req, res) => {
 // GET /api/admin/users
 const getAllUsers = async (req, res) => {
   try {
-    const onlineThreshold = new Date(Date.now() - 60 * 1000); // 1 minute
-
     const users = await User.find({ 
-      role: { $in: ["user", "admin"] }
+      role: { $in: ["user", "admin"] }  // Only user and admin
     })
       .select("-password -refreshToken")
       .sort({ createdAt: -1 });
 
-    const usersWithStatus = users.map((u) => ({
-      ...u.toObject(),
-      isOnline: u.lastActiveAt ? u.lastActiveAt > onlineThreshold : false,
-    }));
+    const data = users.map((u) => ({ ...u.toObject(), isOnline: isOnline(u.lastActiveAt) }));
 
     return res.status(200).json({
       success: true,
-      count: usersWithStatus.length,
-      data: usersWithStatus,
+      count: data.length,
+      data,
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: "Server error" });
@@ -820,6 +820,18 @@ const getUserOverview = async (req, res) => {
 };
 
 
+// PATCH /api/admin/heartbeat — update lastActiveAt for logged-in admin/user
+const heartbeat = async (req, res) => {
+  try {
+    await require("../models/user").User.findByIdAndUpdate(req.user._id, {
+      lastActiveAt: new Date(),
+    });
+    return res.status(200).json({ success: true });
+  } catch {
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
 // ========== SUPERADMIN ONLY FUNCTIONS ==========
 
 // POST /api/admin/create-admin
@@ -899,23 +911,18 @@ const createAdmin = async (req, res) => {
 // GET /api/admin/admins - Get all admins
 const getAllAdmins = async (req, res) => {
   try {
-    const onlineThreshold = new Date(Date.now() - 60 * 1000); // 1 minute
-
     const admins = await User.find({ 
       role: { $in: ["admin", "superadmin"] } 
     })
       .select("-password -refreshToken")
       .sort({ createdAt: -1 });
 
-    const adminsWithStatus = admins.map((a) => ({
-      ...a.toObject(),
-      isOnline: a.lastActiveAt ? a.lastActiveAt > onlineThreshold : false,
-    }));
+    const data = admins.map((a) => ({ ...a.toObject(), isOnline: isOnline(a.lastActiveAt) }));
 
     return res.status(200).json({
       success: true,
-      count: adminsWithStatus.length,
-      data: adminsWithStatus,
+      count: data.length,
+      data,
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: "Server error" });
@@ -1018,16 +1025,6 @@ const deleteAdmin = async (req, res) => {
 
   } catch (error) {
     console.error("deleteAdmin error:", error);
-    return res.status(500).json({ success: false, message: "Server error" });
-  }
-};
-
-// PATCH /api/admin/heartbeat — updates lastActiveAt for the logged-in admin/user
-const heartbeat = async (req, res) => {
-  try {
-    await User.findByIdAndUpdate(req.user._id, { lastActiveAt: new Date() });
-    return res.status(200).json({ success: true });
-  } catch (error) {
     return res.status(500).json({ success: false, message: "Server error" });
   }
 };
