@@ -42,6 +42,10 @@ router.get("/feedback", adminController.getAllFeedback);
 router.get("/feedback/:id", adminController.getFeedbackById);
 router.delete("/feedback/:id", adminController.deleteFeedback);
 
+// Notifications// Notifications
+router.post("/notifications/send", adminController.sendNotificationToUser);
+router.post("/notifications/broadcast", adminController.broadcastNotification);
+
 // ========== SUPERADMIN ONLY ROUTES ==========
 router.post("/create-admin", requireSuperAdmin, adminController.createAdmin);
 router.get("/admins", requireSuperAdmin, adminController.getAllAdmins);

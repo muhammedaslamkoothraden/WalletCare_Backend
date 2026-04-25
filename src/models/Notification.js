@@ -14,6 +14,8 @@ const TYPE_CATEGORY_MAP = {
   SYSTEM_INFO: 'SYSTEM',
   // CHANGED: added for daily inactivity dedup record
   INACTIVITY_REMINDER: 'SYSTEM',
+  ADMIN_BROADCAST: 'SYSTEM',
+  ADMIN_MESSAGE: 'SYSTEM',
 };
 
 const notificationSchema = new mongoose.Schema(
@@ -65,6 +67,8 @@ const notificationSchema = new mongoose.Schema(
         'SYSTEM_INFO',
         // CHANGED: daily inactivity FCM-only push (used for same-day dedup)
         'INACTIVITY_REMINDER',
+        'ADMIN_BROADCAST',
+        'ADMIN_MESSAGE',
       ],
       required: true,
     },

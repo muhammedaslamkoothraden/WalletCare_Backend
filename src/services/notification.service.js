@@ -21,6 +21,9 @@ const TYPE_MAP = {
   weekly_summary: { type: "WEEKLY_SUMMARY", category: "GOAL_PLANNING", title: "Weekly Summary" },
   // Auth
   welcome: { type: "WELCOME", category: "AUTH_SECURITY", title: "Welcome to WalletCare!" },
+  // Admin-sent
+  admin_broadcast: { type: "ADMIN_BROADCAST", category: "SYSTEM", title: "Message from GreenPouch" },
+  admin_message:   { type: "ADMIN_MESSAGE",   category: "SYSTEM", title: "Message from GreenPouch" },
   // Fallback
   system_info: { type: "SYSTEM_INFO", category: "SYSTEM", title: "System Notification" },
 };
