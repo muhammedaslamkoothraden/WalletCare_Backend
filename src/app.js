@@ -61,6 +61,9 @@ app.use("/api/analytics", authMiddleware, analyticsRoutes);
 app.use("/api/feedback", authMiddleware, feedbackRoutes);
 app.use("/api/notifications", authMiddleware, notificationRoutes);
 app.use("/api/test", testRoutes);
+// Admin routes
+app.use("/api/admin", adminRoutes);
+
 
 // ─── ERROR HANDLING ──────────────────────────────────────────────────────────
 
@@ -78,7 +81,5 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Admin routes
-app.use("/api/admin", adminRoutes);
 
 module.exports = app;
