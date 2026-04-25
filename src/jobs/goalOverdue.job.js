@@ -18,17 +18,15 @@ exports.updateOverdueGoals = async () => {
         await createNotification(
           goal.userId,
           `Your goal "${goal.title}" has missed its target date. Let's adjust your timeline!`,
-          "goal_overdue",
-          { title: "Goal Overdue" },
-          null
+          "goal_overdue"
         );
       } catch (e) {
         console.error("Overdue notification error:", e.message);
       }
     }
 
-    console.log("Overdue goals checked and updated");
+    console.log(`[OverdueJob] Marked ${overdueGoals.length} goals as overdue.`);
   } catch (err) {
-    console.error("Cron job error:", err.message);
+    console.error("[OverdueJob] Error:", err.message);
   }
 };

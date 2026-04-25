@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 
-const FEEDBACK_CATEGORIES = ["bug", "glitch", "suggestion", "complaint", "other"];
+const FEEDBACK_CATEGORIES = ["Bug Report", "Feature Request", "UI/UX Issue",
+  "Transaction Issue", "Security Concern", "Other"];
 
 const feedbackSchema = new mongoose.Schema(
   {

@@ -25,17 +25,12 @@ const TYPE_MAP = {
   system_info: { type: "SYSTEM_INFO", category: "SYSTEM", title: "System Notification" },
 };
 
-/**
- * createNotification(userId, message, typeKey, [overrides])
- *
- * typeKey can be a shorthand (e.g. "goal_reminder") or a schema enum value.
- * overrides = { title, category } — optional, takes precedence.
- *
- * Emits a live socket event immediately after saving so Flutter updates instantly.
- */
-/**
- * Clean, Reusable Double-Emit Function
- */
+// ─── sendHybridNotification ───────────────────────────────────────────────────
+//
+// Low-level delivery function. Takes fully-resolved arguments — callers that
+// have already looked up title, category, and typeInfo can call this directly.
+// Most internal callers should use createNotification() below instead.
+
 async function sendHybridNotification(userId, message, title, category, typeInfo) {
   // 1. Save to DB for history
   const notification = await Notification.create({
@@ -46,65 +41,64 @@ async function sendHybridNotification(userId, message, title, category, typeInfo
     type: typeInfo.type,
   });
 
-  const user = await User.findById(userId).select("fcmToken");
-
   // 2. Foreground / Real-Time: Emit to WebSocket Room
   let isOnline = false;
   try {
     isOnline = socketService.isUserOnline(userId);
     socketService.sendNotification(userId, notification.toObject());
   } catch (socketErr) {
-    console.warn('WebSocket push failed', { error: socketErr.message, userId });
+    console.warn('[notify] WebSocket push failed', { error: socketErr.message, userId });
   }
 
-  // 3. ALWAYS emit FCM Push (OS manages background display natively, Flutter handles dupes locally)
-  if (isFirebaseInitialized && user && user.fcmToken) {
-    const fcmPayload = {
-      token: user.fcmToken,
-      // The 'notification' object makes the OS natively show the system banner
-      notification: {
-        title: title,
-        body: message,
-      },
-      // The 'data' object passes routing rules to Flutter's navigatorKey
-      data: {
-        route: '/main', // You can map specialized routes string based on `category` here
-        notificationId: String(notification._id),
-        click_action: "FLUTTER_NOTIFICATION_CLICK"
-      },
-      android: {
-        priority: "high",
+  // 3. FCM Push — user fetch moved inside this block
+  // Only query the DB for fcmToken when Firebase is initialized
+  // No point fetching if Firebase isn't ready
+  if (isFirebaseInitialized) {
+    const user = await User.findById(userId).select('fcmToken').lean();
+
+    if (user?.fcmToken) {
+      const fcmPayload = {
+        token: user.fcmToken,
         notification: {
-          channelId: "high_importance_channel",
-          priority: "high"
-        }
-      },
-      apns: {
-        headers: {
-          "apns-priority": "10"
+          title,
+          body: message,
         },
-        payload: {
-          aps: {
-            sound: "default",
-            contentAvailable: true
-          }
+        data: {
+          route: '/main',
+          notificationId: String(notification._id),
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'high_importance_channel',
+            priority: 'high',
+          },
+        },
+        apns: {
+          headers: { 'apns-priority': '10' },
+          payload: {
+            aps: {
+              sound: 'default',
+              contentAvailable: true,
+            },
+          },
+        },
+      };
+
+      try {
+        await admin.messaging().send(fcmPayload);
+        console.log('[notify] FCM push sent', { userId });
+      } catch (fcmErr) {
+        console.error('[notify] FCM push failed', { code: fcmErr.code, userId });
+
+        if (
+          fcmErr.code === 'messaging/invalid-registration-token' ||
+          fcmErr.code === 'messaging/registration-token-not-registered'
+        ) {
+          console.warn('[notify] Dead FCM token removed', { userId });
+          await User.findByIdAndUpdate(userId, { fcmToken: null });
         }
-      }
-    };
-
-    try {
-      await admin.messaging().send(fcmPayload);
-      console.log('FCM push sent', { userId });
-    } catch (fcmErr) {
-      console.error('FCM push failed', { code: fcmErr.code, userId });
-
-      // ERROR HANDLING: Cleanup dead or invalid tokens automatically
-      if (
-        fcmErr.code === 'messaging/invalid-registration-token' ||
-        fcmErr.code === 'messaging/registration-token-not-registered'
-      ) {
-        console.warn('Dead FCM token removed', { userId });
-        await User.findByIdAndUpdate(userId, { fcmToken: null });
       }
     }
   }
@@ -112,12 +106,34 @@ async function sendHybridNotification(userId, message, title, category, typeInfo
   return notification;
 }
 
-exports.createNotification = async (userId, message, typeKey, overrides = {}) => {
-  const key = (typeKey || "").toLowerCase().replace(/-/g, "_");
-  const mapped = TYPE_MAP[key] || TYPE_MAP["system_info"];
+// ─── createNotification ───────────────────────────────────────────────────────
+//
+// Public API used by all controllers and jobs.
+//
+// @param {ObjectId|string} userId   — recipient
+// @param {string}          message  — notification body text
+// @param {string}          typeKey  — shorthand key from TYPE_MAP (e.g. "low_balance")
+//                                     OR a raw schema enum value (e.g. "LOW_BALANCE")
+// @param {{ title?, category? }} [overrides] — optional, takes precedence over TYPE_MAP
+//
+// Throws if typeKey cannot be resolved — callers should .catch() and log,
+// never let a notification failure abort a financial transaction.
 
-  const title = overrides.title || mapped.title;
-  const category = overrides.category || mapped.category;
+async function createNotification(userId, message, typeKey, overrides = {}) {
+  // Resolve typeKey: try lowercase shorthand first, then uppercase schema value.
+  const normalizedKey = typeKey?.toLowerCase();
+  const typeInfo = TYPE_MAP[normalizedKey] ?? TYPE_MAP[typeKey];
 
-  return await sendHybridNotification(userId, message, title, category, mapped);
-};
+  if (!typeInfo) {
+    throw new Error(`[notify] Unknown typeKey: "${typeKey}". Add it to TYPE_MAP.`);
+  }
+
+  const title    = overrides.title    ?? typeInfo.title;
+  const category = overrides.category ?? typeInfo.category;
+
+  return sendHybridNotification(userId, message, title, category, typeInfo);
+}
+
+// ─── Exports ──────────────────────────────────────────────────────────────────
+
+module.exports = { createNotification, sendHybridNotification };

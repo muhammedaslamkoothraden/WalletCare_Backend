@@ -71,7 +71,16 @@ const goalSchema = new mongoose.Schema(
         type: mongoose.Schema.Types.ObjectId,
         ref: "User"
       }
-    ]
+    ],
+
+    // Set when status transitions to 'completed'. Used by averageCompletionTime
+    // analytics. Not required — goals completed before this field was added will
+    // have status 'completed' but completedAt undefined; the analytics $match on
+    // { completedAt: { $exists: true } } correctly excludes those documents.
+    completedAt: {
+      type: Date,
+      default: null,
+    }
   },
   { timestamps: true }
 );

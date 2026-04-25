@@ -35,34 +35,41 @@ async function executeWithRetry(operation, maxRetries = 3) {
     }
 }
 
+// updateAvailableBalance
+//
+// Applies a signed Decimal delta to an account's availableBalance within a
+// session. Uses the read → compute → save pattern (identical to
+// transactionController) so the Account pre-save middleware runs in full:
+//   • frozen / closed account guard
+//   • negative balance floor
+//   • immutable field protection
+//
+// The previous implementation used a MongoDB aggregation pipeline update
+// (updatePipeline: true, runValidators: false) which bypassed all middleware,
+// meaning a deposit could silently succeed on a frozen account or produce a
+// negative balance that only surfaced after the write was already committed.
+//
+// delta is a Decimal instance — positive to credit, negative to debit.
+
 async function updateAvailableBalance(accountId, userId, delta, session) {
-    const account = await Account.findOneAndUpdate(
-        { _id: accountId, userId },
-        [
-            {
-                $set: {
-                    availableBalance: {
-                        $let: {
-                            vars: {
-                                cur: { $toDecimal: { $ifNull: ['$availableBalance', '0'] } },
-                                deltaStr: { $toDecimal: delta.toFixed(2) },
-                            },
-                            in: { $add: ['$$cur', '$$deltaStr'] },
-                        },
-                    },
-                    lastTransactionAt: new Date(),
-                    updatedAt: new Date()
-                }
-            }
-        ],
-        { new: true, session, runValidators: false, updatePipeline: true }
-    );
+    const account = await Account.findOne({ _id: accountId, userId }).session(session);
 
     if (!account) throw new Error('Account not found or not authorized');
 
-    if (new Decimal(account.availableBalance.toString()).isNegative()) {
+    // Status guards — middleware also checks these, but failing here gives a
+    // cleaner error message before we even attempt the arithmetic.
+    if (account.status === 'FROZEN') throw new Error('Cannot modify balance on a frozen account');
+    if (account.status === 'CLOSED') throw new Error('Cannot modify balance on a closed account');
+
+    const current = new Decimal(account.availableBalance.toString());
+    const newAvailable = current.plus(delta);
+
+    if (newAvailable.isNegative()) {
         throw new Error('Insufficient available balance in source account');
     }
+
+    account.availableBalance = mongoose.Types.Decimal128.fromString(newAvailable.toFixed(2));
+    await account.save({ session });
 
     return account;
 }
@@ -134,6 +141,13 @@ exports.depositToGoal = async (req, res) => {
                 throw conflictError;
             }
 
+            // Read minBalance before updateAvailableBalance mutates the document —
+            // same stale-getter issue as transactionController.
+            const accountForMeta = await Account.findOne({ _id: accountId, userId: req.user.id }).session(session);
+            if (!accountForMeta) throw new Error('Account not found');
+            const minBalance = new Decimal(accountForMeta.minBalance?.toString() || '0');
+            const accountName = accountForMeta.name || 'Account';
+
             const account = await updateAvailableBalance(accountId, req.user.id, depositAmount.negated(), session);
 
             const currentAmt = new Decimal(goal.currentAmount.toString());
@@ -145,6 +159,7 @@ exports.depositToGoal = async (req, res) => {
             const isNowAchieved = newGoalAmount.greaterThanOrEqualTo(targetAmt);
             if (isNowAchieved && goal.status !== 'completed') {
                 goal.status = 'completed';
+                goal.completedAt = new Date();
             }
 
             await goal.save({ session });
@@ -167,8 +182,18 @@ exports.depositToGoal = async (req, res) => {
 
             const justFinished = isNowAchieved && currentAmt.lessThan(targetAmt);
 
-            return { goal, account, ledgerId: ledger._id, justFinished };
+            const newAvailable = new Decimal(account.availableBalance.toString());
+            return { goal, account, ledgerId: ledger._id, justFinished, minBalance, accountName, newAvailable };
         });
+
+        // Low balance notification — fires after commit, non-blocking
+        if (result.minBalance.greaterThan(0) && result.newAvailable.lessThan(result.minBalance)) {
+            createNotification(
+                req.user.id,
+                `Balance Alert: '${result.accountName}' is below the minimum threshold. Current balance: ₹${result.newAvailable.toFixed(2)}.`,
+                'low_balance'
+            ).catch((e) => console.warn('[notify] Low balance notification failed:', e.message));
+        }
 
         if (result.justFinished) {
             createNotification(
@@ -296,7 +321,14 @@ exports.updateGoal = async (req, res) => {
 
         if (body.category) goal.category = body.category;
 
-        goal.status = goal.currentAmount >= goal.targetAmount ? 'completed' : 'active';
+        // Use Decimal comparison — goal.currentAmount is Number but comparing with
+        // >= risks floating-point imprecision when amounts are near equal.
+        const isComplete = new Decimal(goal.currentAmount.toString())
+            .greaterThanOrEqualTo(new Decimal(goal.targetAmount.toString()));
+        const wasAlreadyComplete = goal.status === 'completed';
+        goal.status = isComplete ? 'completed' : 'active';
+        if (isComplete && !wasAlreadyComplete) goal.completedAt = new Date();
+        if (!isComplete) goal.completedAt = null; // targetAmount raised above currentAmount
 
         const updatedGoal = await goal.save();
         res.status(200).json({ success: true, message: 'Goal updated successfully', data: updatedGoal });

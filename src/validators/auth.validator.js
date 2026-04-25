@@ -5,7 +5,7 @@ exports.validateRegister = [
   body("name")
     .trim()
     .notEmpty().withMessage("Name is required").bail()
-    .isLength({ min: 2, max: 40 }).withMessage("Name must be between 2 and 50 characters").bail()
+    .isLength({ min: 2, max: 50 }).withMessage("Name must be between 2 and 50 characters").bail()
     .matches(/^[a-zA-Z\s]+$/).withMessage("Name must contain letters only"),
 
   body("email")
@@ -14,7 +14,7 @@ exports.validateRegister = [
     .isEmail().withMessage("Invalid email address").bail()
     .normalizeEmail(),
 
-  body("password")
+  body("password") 
     .notEmpty().withMessage("Password is required").bail()
     .isLength({ min: 8 }).withMessage("Password must be at least 8 characters").bail()
     .not().matches(/[\u{1F000}-\u{1FFFF}]/u).withMessage("Password must not contain emojis")

@@ -14,14 +14,30 @@ const feedbackRoutes = require("./routes/feedback.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const testRoutes = require("./routes/test.routes");
 
-// Middleware Imports
+const adminRoutes = require("./routes/admin.routes");
 const authMiddleware = require("./middlewares/auth.middleware");
 
 const app = express();
 
-// ─── MIDDLEWARES ─────────────────────────────────────────────────────────────
+// Allowed origins
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+];
+
+// Global middlewares
 app.use(helmet());
-app.use(cors());
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error("Not allowed by CORS"));
+    }
+  },
+  credentials: true,
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true })); // Added for form-data support
 
@@ -61,5 +77,8 @@ app.use((err, req, res, next) => {
     error: process.env.NODE_ENV === "development" ? err.message : {},
   });
 });
+
+// Admin routes
+app.use("/api/admin", adminRoutes);
 
 module.exports = app;
