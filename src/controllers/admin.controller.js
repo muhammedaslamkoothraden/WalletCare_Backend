@@ -13,32 +13,17 @@ const isOnline = (lastActiveAt) =>
 // GET /api/admin/stats
 const getStats = async (req, res) => {
   try {
-    const now = new Date();
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
 
-    const totalUsers             = await User.countDocuments({ role: "user" });
-    const bannedUsers            = await User.countDocuments({ role: "user", isBanned: true });
-    const activeUsers            = totalUsers - bannedUsers;
-    const premiumUsers           = await User.countDocuments({ role: "user", isPremium: true });
-    const totalAdmins            = await User.countDocuments({ role: { $in: ["admin", "superadmin"] } });
-    const totalFeedbacks         = await Feedback.countDocuments();
-    const scheduledForDeletion   = await User.countDocuments({
-      role: "user",
-      scheduledDeletionAt: { $ne: null },
-    });
-
-    // ── NEW: Daily Active Users (active in last 24 hours) ──────────────
-    const dau = await User.countDocuments({
-      role: "user",
-      isBanned: false,
-      lastActiveAt: { $gte: new Date(now - 24 * 60 * 60 * 1000) },
-    });
-
-    // ── NEW: Weekly Active Users (active in last 7 days) ──────────────
-    const wau = await User.countDocuments({
-      role: "user",
-      isBanned: false,
-      lastActiveAt: { $gte: new Date(now - 7 * 24 * 60 * 60 * 1000) },
-    });
+    const totalUsers           = await User.countDocuments({ role: "user" });
+    const bannedUsers          = await User.countDocuments({ role: "user", isBanned: true });
+    const premiumUsers         = await User.countDocuments({ role: "user", isPremium: true });
+    const totalAdmins          = await User.countDocuments({ role: { $in: ["admin", "superadmin"] } });
+    const totalFeedbacks       = await Feedback.countDocuments();
+    const scheduledForDeletion = await User.countDocuments({ role: "user", scheduledDeletionAt: { $ne: null } });
+    const newUsersThisMonth    = await User.countDocuments({ role: "user", createdAt: { $gte: startOfMonth } });
 
     // Calculate average user rating from User collection
     const userRatingResult = await User.aggregate([
@@ -54,16 +39,13 @@ const getStats = async (req, res) => {
       success: true,
       data: {
         totalUsers,
-        activeUsers,
+        newUsersThisMonth,
         bannedUsers,
         premiumUsers,
         totalAdmins,
         totalFeedbacks,
         scheduledForDeletion,
         avgUserRating,
-        // ── NEW ──
-        dau,
-        wau,
       },
     });
   } catch (error) {
@@ -359,36 +341,39 @@ const getUserAnalytics = async (req, res) => {
 
     const premiumUsers = await User.countDocuments({ role: "user", isPremium: true });
     const freeUsers    = await User.countDocuments({ role: "user", isPremium: false });
-    const totalUsers   = premiumUsers + freeUsers;
 
-    // ── NEW: Feature adoption rates ────────────────────────────────────
-    // % of users who have created at least 1 goal
+    // Build a set of valid non-banned user IDs (all roles — user + admin can
+    // both use the app). Filtering Goal/Ledger/Account distinct results against
+    // this set means ghost records from deleted dev/test accounts never inflate
+    // the numerator above the denominator, so rates can never exceed 100%.
+    const validUserIds   = await User.distinct("_id", { isBanned: false });
+    const validIdStrings = new Set(validUserIds.map((id) => id.toString()));
+    const eligibleCount  = validUserIds.length;
+
     const usersWithGoals = await Goal.distinct("userId");
 
-    // % of users who have logged at least 1 transaction
     const usersWithTransactions = await Ledger.distinct("userId", {
       status: "COMPLETED",
       direction: "STANDARD",
     });
 
-    // % of users who have set up more than 1 account
-    const multiAccountAgg = await Account.aggregate([
+    // For multi-account we need the raw list (not a count) so we can filter
+    const multiAccountRaw = await Account.aggregate([
       { $match: { deletedAt: null } },
       { $group: { _id: "$userId", count: { $sum: 1 } } },
       { $match: { count: { $gt: 1 } } },
-      { $count: "total" },
     ]);
 
-    const goalAdoptionRate = totalUsers
-      ? parseFloat(((usersWithGoals.length / totalUsers) * 100).toFixed(1))
+    const goalAdoptionRate = eligibleCount
+      ? parseFloat(((usersWithGoals.filter((id) => validIdStrings.has(id.toString())).length / eligibleCount) * 100).toFixed(1))
       : 0;
 
-    const txAdoptionRate = totalUsers
-      ? parseFloat(((usersWithTransactions.length / totalUsers) * 100).toFixed(1))
+    const txAdoptionRate = eligibleCount
+      ? parseFloat(((usersWithTransactions.filter((id) => validIdStrings.has(id.toString())).length / eligibleCount) * 100).toFixed(1))
       : 0;
 
-    const multiAccountRate = totalUsers
-      ? parseFloat((((multiAccountAgg[0]?.total || 0) / totalUsers) * 100).toFixed(1))
+    const multiAccountRate = eligibleCount
+      ? parseFloat(((multiAccountRaw.filter((d) => validIdStrings.has(d._id.toString())).length / eligibleCount) * 100).toFixed(1))
       : 0;
 
     return res.status(200).json({
