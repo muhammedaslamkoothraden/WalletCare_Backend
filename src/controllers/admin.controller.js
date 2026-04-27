@@ -3,6 +3,7 @@ const Feedback = require("../models/Feedback");
 const bcrypt = require("bcryptjs");
 const { generateAccessToken, generateRefreshToken } = require("../utils/token");
 const hashToken = require("../utils/hashToken");
+const { NotificationTemplate } = require("../models/NotificationTemplate");
 
 // Helper — user is online if pinged within last 60 seconds
 const ONLINE_THRESHOLD_MS = 60 * 1000;
@@ -12,15 +13,31 @@ const isOnline = (lastActiveAt) =>
 // GET /api/admin/stats
 const getStats = async (req, res) => {
   try {
-    const totalUsers = await User.countDocuments({ role: "user" });
-    const bannedUsers = await User.countDocuments({ role: "user", isBanned: true });
-    const activeUsers = totalUsers - bannedUsers;
-    const premiumUsers = await User.countDocuments({ role: "user", isPremium: true });
-    const totalAdmins = await User.countDocuments({ role: { $in: ["admin", "superadmin"] } });
-    const totalFeedbacks = await Feedback.countDocuments();
-    const scheduledForDeletion = await User.countDocuments({
+    const now = new Date();
+
+    const totalUsers             = await User.countDocuments({ role: "user" });
+    const bannedUsers            = await User.countDocuments({ role: "user", isBanned: true });
+    const activeUsers            = totalUsers - bannedUsers;
+    const premiumUsers           = await User.countDocuments({ role: "user", isPremium: true });
+    const totalAdmins            = await User.countDocuments({ role: { $in: ["admin", "superadmin"] } });
+    const totalFeedbacks         = await Feedback.countDocuments();
+    const scheduledForDeletion   = await User.countDocuments({
       role: "user",
       scheduledDeletionAt: { $ne: null },
+    });
+
+    // ── NEW: Daily Active Users (active in last 24 hours) ──────────────
+    const dau = await User.countDocuments({
+      role: "user",
+      isBanned: false,
+      lastActiveAt: { $gte: new Date(now - 24 * 60 * 60 * 1000) },
+    });
+
+    // ── NEW: Weekly Active Users (active in last 7 days) ──────────────
+    const wau = await User.countDocuments({
+      role: "user",
+      isBanned: false,
+      lastActiveAt: { $gte: new Date(now - 7 * 24 * 60 * 60 * 1000) },
     });
 
     // Calculate average user rating from User collection
@@ -44,6 +61,9 @@ const getStats = async (req, res) => {
         totalFeedbacks,
         scheduledForDeletion,
         avgUserRating,
+        // ── NEW ──
+        dau,
+        wau,
       },
     });
   } catch (error) {
@@ -160,8 +180,8 @@ const logoutAllAdminSessions = async (req, res) => {
 // GET /api/admin/users
 const getAllUsers = async (req, res) => {
   try {
-    const users = await User.find({ 
-      role: { $in: ["user", "admin"] }  // Only user and admin
+    const users = await User.find({
+      role: { $in: ["user", "admin"] },
     })
       .select("-password -refreshToken")
       .sort({ createdAt: -1 });
@@ -313,6 +333,10 @@ const restoreUser = async (req, res) => {
 // Query params: ?months=N (default: 6)
 const getUserAnalytics = async (req, res) => {
   try {
+    const Goal    = require("../models/goal");
+    const Ledger  = require("../models/Ledger");
+    const Account = require("../models/Account");
+
     const months = parseInt(req.query.months) || 6;
     const startDate = new Date();
     startDate.setMonth(startDate.getMonth() - months);
@@ -334,13 +358,50 @@ const getUserAnalytics = async (req, res) => {
     ]);
 
     const premiumUsers = await User.countDocuments({ role: "user", isPremium: true });
-    const freeUsers = await User.countDocuments({ role: "user", isPremium: false });
+    const freeUsers    = await User.countDocuments({ role: "user", isPremium: false });
+    const totalUsers   = premiumUsers + freeUsers;
+
+    // ── NEW: Feature adoption rates ────────────────────────────────────
+    // % of users who have created at least 1 goal
+    const usersWithGoals = await Goal.distinct("userId");
+
+    // % of users who have logged at least 1 transaction
+    const usersWithTransactions = await Ledger.distinct("userId", {
+      status: "COMPLETED",
+      direction: "STANDARD",
+    });
+
+    // % of users who have set up more than 1 account
+    const multiAccountAgg = await Account.aggregate([
+      { $match: { deletedAt: null } },
+      { $group: { _id: "$userId", count: { $sum: 1 } } },
+      { $match: { count: { $gt: 1 } } },
+      { $count: "total" },
+    ]);
+
+    const goalAdoptionRate = totalUsers
+      ? parseFloat(((usersWithGoals.length / totalUsers) * 100).toFixed(1))
+      : 0;
+
+    const txAdoptionRate = totalUsers
+      ? parseFloat(((usersWithTransactions.length / totalUsers) * 100).toFixed(1))
+      : 0;
+
+    const multiAccountRate = totalUsers
+      ? parseFloat((((multiAccountAgg[0]?.total || 0) / totalUsers) * 100).toFixed(1))
+      : 0;
 
     return res.status(200).json({
       success: true,
       data: {
         userGrowth,
         premiumVsFree: { premiumUsers, freeUsers },
+        // ── NEW ──
+        adoption: {
+          goalAdoptionRate,
+          txAdoptionRate,
+          multiAccountRate,
+        },
       },
     });
   } catch (error) {
@@ -457,6 +518,7 @@ const getTransactionAnalytics = async (req, res) => {
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
+    // Income vs Expense totals — kept for reference but amounts not shown on analytics page
     const incomeExpense = await Ledger.aggregate([
       {
         $match: {
@@ -486,15 +548,15 @@ const getTransactionAnalytics = async (req, res) => {
         $group: {
           _id: {
             month: { $month: "$transactedAt" },
-            year: { $year: "$transactedAt" },
+            year:  { $year: "$transactedAt" },
           },
           count: { $sum: 1 },
-          totalAmount: { $sum: { $toDouble: "$amount" } },
         },
       },
       { $sort: { "_id.year": 1, "_id.month": 1 } },
     ]);
 
+    // ── CHANGED: sort by count (frequency) not by total amount ────────
     const topCategories = await Ledger.aggregate([
       {
         $match: {
@@ -506,11 +568,11 @@ const getTransactionAnalytics = async (req, res) => {
       {
         $group: {
           _id: "$category",
-          total: { $sum: { $toDouble: "$amount" } },
           count: { $sum: 1 },
+          // total kept in DB but not sent to frontend analytics
         },
       },
-      { $sort: { total: -1 } },
+      { $sort: { count: -1 } },   // ← sorted by frequency now
       { $limit: 6 },
     ]);
 
@@ -519,18 +581,19 @@ const getTransactionAnalytics = async (req, res) => {
       direction: "STANDARD",
     });
 
-    const incomeData = incomeExpense.find((d) => d._id === "INCOME") || { total: 0, count: 0 };
+    const incomeData  = incomeExpense.find((d) => d._id === "INCOME")  || { total: 0, count: 0 };
     const expenseData = incomeExpense.find((d) => d._id === "EXPENSE") || { total: 0, count: 0 };
 
     return res.status(200).json({
       success: true,
       data: {
         totalTransactions,
-        totalIncome: parseFloat(incomeData.total.toFixed(2)),
-        totalExpense: parseFloat(expenseData.total.toFixed(2)),
-        incomeCount: incomeData.count,
+        // Counts — shown on analytics/dashboard
+        incomeCount:  incomeData.count,
         expenseCount: expenseData.count,
+        // Monthly volume trend
         monthlyVolume,
+        // Top categories by frequency (count only, no amounts)
         topCategories,
       },
     });
@@ -554,8 +617,6 @@ const getGoalAnalytics = async (req, res) => {
         $group: {
           _id: "$category",
           count: { $sum: 1 },
-          totalTarget: { $sum: "$targetAmount" },
-          totalCurrent: { $sum: "$currentAmount" },
         },
       },
       { $sort: { count: -1 } },
@@ -573,9 +634,7 @@ const getGoalAnalytics = async (req, res) => {
         $group: {
           _id: null,
           avgCompletionRate: { $avg: "$completionRate" },
-          totalGoals: { $sum: 1 },
-          totalTargetAmount: { $sum: "$targetAmount" },
-          totalCurrentAmount: { $sum: "$currentAmount" },
+          totalGoals:        { $sum: 1 },
         },
       },
     ]);
@@ -583,6 +642,7 @@ const getGoalAnalytics = async (req, res) => {
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
+    // ── Already existed in controller but was never returned — now returned ──
     const goalsPerMonth = await Goal.aggregate([
       { $match: { createdAt: { $gte: sixMonthsAgo } } },
       {
@@ -594,13 +654,7 @@ const getGoalAnalytics = async (req, res) => {
       { $sort: { "_id.year": 1, "_id.month": 1 } },
     ]);
 
-    const stats = completionData[0] || {
-      avgCompletionRate: 0,
-      totalGoals: 0,
-      totalTargetAmount: 0,
-      totalCurrentAmount: 0,
-    };
-
+    const stats     = completionData[0] || { avgCompletionRate: 0, totalGoals: 0 };
     const active    = goalsByStatus.find((d) => d._id === "active")    || { count: 0 };
     const completed = goalsByStatus.find((d) => d._id === "completed") || { count: 0 };
     const overdue   = goalsByStatus.find((d) => d._id === "overdue")   || { count: 0 };
@@ -608,18 +662,14 @@ const getGoalAnalytics = async (req, res) => {
     return res.status(200).json({
       success: true,
       data: {
-        totalGoals: stats.totalGoals,
-        activeGoals: active.count,
-        completedGoals: completed.count,
-        overdueGoals: overdue.count,
+        totalGoals:        stats.totalGoals,
+        activeGoals:       active.count,
+        completedGoals:    completed.count,
+        overdueGoals:      overdue.count,
         avgCompletionRate: parseFloat((stats.avgCompletionRate || 0).toFixed(1)),
-        totalTargetAmount: parseFloat(
-          goalsByCategory.reduce((sum, d) => sum + d.totalTarget, 0).toFixed(2)
-        ),
-        totalCurrentAmount: parseFloat(
-          goalsByCategory.reduce((sum, d) => sum + d.totalCurrent, 0).toFixed(2)
-        ),
+        // ── CHANGED: category data is count only (no rupee amounts) ──
         goalsByCategory,
+        // ── NEW: was computed before but never returned ──────────────
         goalsPerMonth,
       },
     });
@@ -634,13 +684,15 @@ const getAccountAnalytics = async (req, res) => {
   try {
     const Account = require("../models/Account");
 
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
     const accountsByType = await Account.aggregate([
       { $match: { deletedAt: null } },
       {
         $group: {
           _id: "$type",
           count: { $sum: 1 },
-          totalBalance: { $sum: { $toDouble: "$availableBalance" } },
         },
       },
     ]);
@@ -649,14 +701,12 @@ const getAccountAnalytics = async (req, res) => {
       { $group: { _id: "$status", count: { $sum: 1 } } },
     ]);
 
-    const balanceData = await Account.aggregate([
+    const countData = await Account.aggregate([
       { $match: { status: "ACTIVE", deletedAt: null } },
       {
         $group: {
           _id: null,
-          totalBalance: { $sum: { $toDouble: "$availableBalance" } },
           totalAccounts: { $sum: 1 },
-          avgBalance: { $avg: { $toDouble: "$availableBalance" } },
         },
       },
     ]);
@@ -667,27 +717,38 @@ const getAccountAnalytics = async (req, res) => {
       { $group: { _id: null, avgAccounts: { $avg: "$accountCount" } } },
     ]);
 
-    const balance  = balanceData[0] || { totalBalance: 0, totalAccounts: 0, avgBalance: 0 };
-    const cashData = accountsByType.find((d) => d._id === "CASH") || { count: 0, totalBalance: 0 };
-    const bankData = accountsByType.find((d) => d._id === "BANK") || { count: 0, totalBalance: 0 };
-    const active   = accountsByStatus.find((d) => d._id === "ACTIVE")  || { count: 0 };
-    const frozen   = accountsByStatus.find((d) => d._id === "FROZEN")  || { count: 0 };
-    const closed   = accountsByStatus.find((d) => d._id === "CLOSED")  || { count: 0 };
+    // ── NEW: Accounts created per month trend ──────────────────────────
+    const accountsPerMonth = await Account.aggregate([
+      { $match: { deletedAt: null, createdAt: { $gte: sixMonthsAgo } } },
+      {
+        $group: {
+          _id: { month: { $month: "$createdAt" }, year: { $year: "$createdAt" } },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1 } },
+    ]);
+
+    const counts   = countData[0] || { totalAccounts: 0 };
+    const cashData = accountsByType.find((d) => d._id === "CASH") || { count: 0 };
+    const bankData = accountsByType.find((d) => d._id === "BANK") || { count: 0 };
+    const active   = accountsByStatus.find((d) => d._id === "ACTIVE") || { count: 0 };
+    const frozen   = accountsByStatus.find((d) => d._id === "FROZEN") || { count: 0 };
+    const closed   = accountsByStatus.find((d) => d._id === "CLOSED") || { count: 0 };
 
     return res.status(200).json({
       success: true,
       data: {
-        totalAccounts: balance.totalAccounts,
-        totalBalance: parseFloat(balance.totalBalance.toFixed(2)),
-        avgBalance: parseFloat(balance.avgBalance.toFixed(2)),
+        totalAccounts:     counts.totalAccounts,
         avgAccountsPerUser: parseFloat((avgAccountsPerUser[0]?.avgAccounts || 0).toFixed(1)),
-        cashAccounts: cashData.count,
-        bankAccounts: bankData.count,
-        cashBalance: parseFloat(cashData.totalBalance.toFixed(2)),
-        bankBalance: parseFloat(bankData.totalBalance.toFixed(2)),
-        activeAccounts: active.count,
-        frozenAccounts: frozen.count,
-        closedAccounts: closed.count,
+        cashAccounts:      cashData.count,
+        bankAccounts:      bankData.count,
+        activeAccounts:    active.count,
+        frozenAccounts:    frozen.count,
+        closedAccounts:    closed.count,
+        // ── NEW ──────────────────────────────────────────────────────
+        accountsPerMonth,
+        // ── REMOVED: totalBalance, cashBalance, bankBalance, avgBalance ──
       },
     });
   } catch (error) {
@@ -697,6 +758,7 @@ const getAccountAnalytics = async (req, res) => {
 };
 
 // GET /api/admin/users/:id/overview
+// Note: Per-user rupee amounts are kept here — they're meaningful for a single user's detail view
 const getUserOverview = async (req, res) => {
   try {
     const Account = require("../models/Account");
@@ -819,8 +881,7 @@ const getUserOverview = async (req, res) => {
   }
 };
 
-
-// PATCH /api/admin/heartbeat — update lastActiveAt for logged-in admin/user
+// PATCH /api/admin/heartbeat
 const heartbeat = async (req, res) => {
   try {
     await require("../models/user").User.findByIdAndUpdate(req.user._id, {
@@ -839,55 +900,50 @@ const createAdmin = async (req, res) => {
   try {
     const { email, password, name } = req.body;
 
-    // Validation
     if (!email || !password || !name) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Email, password, and name are required" 
+      return res.status(400).json({
+        success: false,
+        message: "Email, password, and name are required",
       });
     }
 
     if (password.length < 8) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Password must be at least 8 characters" 
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 8 characters",
       });
     }
 
-    // Check if email already exists
     const existingUser = await User.findOne({ email: email.trim().toLowerCase() });
     if (existingUser) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Email already registered" 
+      return res.status(400).json({
+        success: false,
+        message: "Email already registered",
       });
     }
 
-    // Create admin user
     const newAdmin = new User({
       email: email.trim().toLowerCase(),
       password,
       name: name.trim(),
       role: "admin",
-      isEmailVerified: true, // Skip verification for admins
+      isEmailVerified: true,
     });
 
     await newAdmin.save();
 
-    // Create wallet account for admin
     const Account = require("../models/Account");
     const newAccount = new Account({
-      userId: newAdmin._id,
-      name: "Main Wallet",
-      type: "CASH",
-      currency: "INR",
+      userId:    newAdmin._id,
+      name:      "Main Wallet",
+      type:      "CASH",
+      currency:  "INR",
       isDefault: true,
-      status: "ACTIVE",
+      status:    "ACTIVE",
     });
 
     await newAccount.save();
 
-    // Return admin data (exclude password)
     const adminData = await User.findById(newAdmin._id).select("-password -refreshToken");
 
     return res.status(201).json({
@@ -895,24 +951,20 @@ const createAdmin = async (req, res) => {
       message: "Admin created successfully",
       data: adminData,
     });
-
   } catch (error) {
     console.error("createAdmin error:", error);
     if (error.code === 11000) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Email already exists" 
-      });
+      return res.status(400).json({ success: false, message: "Email already exists" });
     }
     return res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
-// GET /api/admin/admins - Get all admins
+// GET /api/admin/admins
 const getAllAdmins = async (req, res) => {
   try {
-    const admins = await User.find({ 
-      role: { $in: ["admin", "superadmin"] } 
+    const admins = await User.find({
+      role: { $in: ["admin", "superadmin"] },
     })
       .select("-password -refreshToken")
       .sort({ createdAt: -1 });
@@ -929,7 +981,7 @@ const getAllAdmins = async (req, res) => {
   }
 };
 
-// PATCH /api/admin/demote/:id - Remove admin role (demote to user)
+// PATCH /api/admin/demote/:id
 const demoteAdmin = async (req, res) => {
   try {
     const targetUser = await User.findById(req.params.id);
@@ -938,45 +990,29 @@ const demoteAdmin = async (req, res) => {
       return res.status(404).json({ success: false, message: "Admin not found" });
     }
 
-    // Prevent demoting superadmins
     if (targetUser.role === "superadmin") {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Cannot demote a superadmin" 
-      });
+      return res.status(400).json({ success: false, message: "Cannot demote a superadmin" });
     }
 
-    // Prevent demoting yourself
     if (targetUser._id.toString() === req.user._id.toString()) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Cannot demote yourself" 
-      });
+      return res.status(400).json({ success: false, message: "Cannot demote yourself" });
     }
 
     if (targetUser.role !== "admin") {
-      return res.status(400).json({ 
-        success: false, 
-        message: "User is not an admin" 
-      });
+      return res.status(400).json({ success: false, message: "User is not an admin" });
     }
 
-    // Demote to regular user
     targetUser.role = "user";
     await targetUser.save();
 
-    return res.status(200).json({ 
-      success: true, 
-      message: "Admin demoted to user successfully" 
-    });
-
+    return res.status(200).json({ success: true, message: "Admin demoted to user successfully" });
   } catch (error) {
     console.error("demoteAdmin error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
-// DELETE /api/admin/delete/:id - Delete admin account entirely
+// DELETE /api/admin/delete/:id
 const deleteAdmin = async (req, res) => {
   try {
     const targetUser = await User.findById(req.params.id);
@@ -985,50 +1021,33 @@ const deleteAdmin = async (req, res) => {
       return res.status(404).json({ success: false, message: "Admin not found" });
     }
 
-    // Prevent deleting superadmins
     if (targetUser.role === "superadmin") {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Cannot delete a superadmin" 
-      });
+      return res.status(400).json({ success: false, message: "Cannot delete a superadmin" });
     }
 
-    // Prevent deleting yourself
     if (targetUser._id.toString() === req.user._id.toString()) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Cannot delete yourself" 
-      });
+      return res.status(400).json({ success: false, message: "Cannot delete yourself" });
     }
 
     if (targetUser.role !== "admin") {
-      return res.status(400).json({ 
-        success: false, 
-        message: "User is not an admin" 
-      });
+      return res.status(400).json({ success: false, message: "User is not an admin" });
     }
 
-    // Delete admin's account(s) and other data
     const Account = require("../models/Account");
-    const Goal = require("../models/goal");
-    const Ledger = require("../models/Ledger");
+    const Goal    = require("../models/goal");
+    const Ledger  = require("../models/Ledger");
 
     await Account.deleteMany({ userId: targetUser._id });
     await Goal.deleteMany({ userId: targetUser._id });
     await Ledger.deleteMany({ userId: targetUser._id });
     await User.findByIdAndDelete(targetUser._id);
 
-    return res.status(200).json({ 
-      success: true, 
-      message: "Admin deleted successfully" 
-    });
-
+    return res.status(200).json({ success: true, message: "Admin deleted successfully" });
   } catch (error) {
     console.error("deleteAdmin error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
   }
 };
-
 
 const adminNotificationService = require("../services/adminNotification.service");
 
@@ -1036,19 +1055,11 @@ const adminNotificationService = require("../services/adminNotification.service"
 const sendNotificationToUser = async (req, res) => {
   try {
     const { userId, message, title } = req.body;
-
     await adminNotificationService.sendToUser(userId, message, title);
-
-    return res.status(200).json({
-      success: true,
-      message: "Notification sent successfully",
-    });
+    return res.status(200).json({ success: true, message: "Notification sent successfully" });
   } catch (error) {
     console.error("sendNotificationToUser error:", error.message);
-    return res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    return res.status(400).json({ success: false, message: error.message });
   }
 };
 
@@ -1057,24 +1068,11 @@ const broadcastNotification = async (req, res) => {
   try {
     const { message, title } = req.body;
     const filter = req.query.filter;
-
-    const result = await adminNotificationService.broadcast(
-      filter,
-      message,
-      title
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: "Broadcast completed",
-      data: result,
-    });
+    const result = await adminNotificationService.broadcast(filter, message, title);
+    return res.status(200).json({ success: true, message: "Broadcast completed", data: result });
   } catch (error) {
     console.error("broadcastNotification error:", error.message);
-    return res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    return res.status(400).json({ success: false, message: error.message });
   }
 };
 
@@ -1082,19 +1080,11 @@ const broadcastNotification = async (req, res) => {
 const sendNotificationToAdmin = async (req, res) => {
   try {
     const { adminId, message, title } = req.body;
-
     await adminNotificationService.sendToAdmin(adminId, message, title);
-
-    return res.status(200).json({
-      success: true,
-      message: "Notification sent to admin",
-    });
+    return res.status(200).json({ success: true, message: "Notification sent to admin" });
   } catch (error) {
     console.error("sendNotificationToAdmin error:", error.message);
-    return res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    return res.status(400).json({ success: false, message: error.message });
   }
 };
 
@@ -1102,26 +1092,87 @@ const sendNotificationToAdmin = async (req, res) => {
 const broadcastToAdmins = async (req, res) => {
   try {
     const { message, title } = req.body;
-
-    const result = await adminNotificationService.broadcastAdmins(
-      message,
-      title
-    );
-
-    return res.status(200).json({
-      success: true,
-      message: "Admin broadcast completed",
-      data: result,
-    });
+    const result = await adminNotificationService.broadcastAdmins(message, title);
+    return res.status(200).json({ success: true, message: "Admin broadcast completed", data: result });
   } catch (error) {
     console.error("broadcastToAdmins error:", error.message);
-    return res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    return res.status(400).json({ success: false, message: error.message });
   }
 };
 
+// ================= NOTIFICATION TEMPLATES =================
+
+const getNotificationTemplates = async (req, res) => {
+  try {
+    const templates = await NotificationTemplate.find()
+      .sort({ createdAt: -1 })
+      .lean();
+    return res.status(200).json({ success: true, count: templates.length, data: templates });
+  } catch (error) {
+    console.error("getNotificationTemplates error:", error.message);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+const createNotificationTemplate = async (req, res) => {
+  try {
+    const { title, message, filter } = req.body;
+    if (!title?.trim() || !message?.trim())
+      return res.status(400).json({ success: false, message: "Title and message are required" });
+    if (message.trim().length > 255)
+      return res.status(400).json({ success: false, message: "Message cannot exceed 255 characters" });
+    if (title.trim().length > 100)
+      return res.status(400).json({ success: false, message: "Title cannot exceed 100 characters" });
+
+    const template = await NotificationTemplate.create({
+      title:         title.trim(),
+      message:       message.trim(),
+      filter:        filter || "active",
+      createdBy:     req.user._id,
+      createdByName: req.user.name || "",
+    });
+    return res.status(201).json({ success: true, message: "Template created successfully", data: template });
+  } catch (error) {
+    console.error("createNotificationTemplate error:", error.message);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+const deleteNotificationTemplate = async (req, res) => {
+  try {
+    const template = await NotificationTemplate.findByIdAndDelete(req.params.id);
+    if (!template)
+      return res.status(404).json({ success: false, message: "Template not found" });
+    return res.status(200).json({ success: true, message: "Template deleted successfully" });
+  } catch (error) {
+    console.error("deleteNotificationTemplate error:", error.message);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+const broadcastNotificationTemplate = async (req, res) => {
+  try {
+    const template = await NotificationTemplate.findById(req.params.id);
+    if (!template)
+      return res.status(404).json({ success: false, message: "Template not found" });
+
+    // filter can come from body, query, or fall back to the template's own saved filter
+    const filter = req.body?.filter || req.query?.filter || template.filter;
+
+    const result = await adminNotificationService.broadcast(filter, template.message, template.title);
+
+    await NotificationTemplate.findByIdAndUpdate(req.params.id, {
+      $inc: { broadcastCount: 1 },
+      lastBroadcastAt:     new Date(),
+      lastBroadcastResult: result,
+    });
+
+    return res.status(200).json({ success: true, message: "Broadcast completed", data: result });
+  } catch (error) {
+    console.error("broadcastNotificationTemplate error:", error.message);
+    return res.status(400).json({ success: false, message: error.message });
+  }
+};
 
 module.exports = {
   getStats,
@@ -1145,15 +1196,19 @@ module.exports = {
   getGoalAnalytics,
   getAccountAnalytics,
   getUserOverview,
-  // Notification functions
-   sendNotificationToUser,
+  sendNotificationToUser,
   broadcastNotification,
   sendNotificationToAdmin,
-  broadcastToAdmins,
   // Superadmin functions
+  broadcastToAdmins,
   createAdmin,
   getAllAdmins,
   demoteAdmin,
   deleteAdmin,
   heartbeat,
+// ── Notification Templates ──
+  getNotificationTemplates,
+  createNotificationTemplate,
+  deleteNotificationTemplate,
+  broadcastNotificationTemplate,
 };

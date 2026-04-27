@@ -46,10 +46,18 @@ router.patch("/heartbeat", adminController.heartbeat);
 router.post("/notifications/send", adminController.sendNotificationToUser);
 router.post("/notifications/broadcast", adminController.broadcastNotification);
 
+router.get("/notification-templates", adminController.getNotificationTemplates);
+router.post("/notification-templates", adminController.createNotificationTemplate);
+router.delete("/notification-templates/:id", adminController.deleteNotificationTemplate);
+router.post("/notification-templates/:id/broadcast", adminController.broadcastNotificationTemplate);
+
 // ========== SUPERADMIN ONLY ROUTES ==========
 router.post("/create-admin", requireSuperAdmin, adminController.createAdmin);
 router.get("/admins", requireSuperAdmin, adminController.getAllAdmins);
 router.patch("/demote/:id", requireSuperAdmin, adminController.demoteAdmin);
 router.delete("/delete-admin/:id", requireSuperAdmin, adminController.deleteAdmin);
+
+router.post("/notifications/admin/send",      requireSuperAdmin, adminController.sendNotificationToAdmin);
+router.post("/notifications/admin/broadcast", requireSuperAdmin, adminController.broadcastToAdmins);
 
 module.exports = router;
