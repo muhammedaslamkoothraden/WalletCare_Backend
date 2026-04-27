@@ -13,7 +13,7 @@ const analyticsRoutes = require("./routes/analytics.routes");
 const feedbackRoutes = require("./routes/feedback.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const testRoutes = require("./routes/test.routes");
-
+const exportRoutes = require('./routes/export.routes');   
 const adminRoutes = require("./routes/admin.routes");
 const authMiddleware = require("./middlewares/auth.middleware");
 
@@ -60,7 +60,8 @@ app.use("/api/goals", authMiddleware, goalRoutes);
 app.use("/api/analytics", authMiddleware, analyticsRoutes);
 app.use("/api/feedback", authMiddleware, feedbackRoutes);
 app.use("/api/notifications", authMiddleware, notificationRoutes);
-app.use("/api/test", testRoutes);
+app.use("/api/test", testRoutes);    
+app.use('/api/export', authMiddleware, exportRoutes);          // with protected routes
 
 // ─── ERROR HANDLING ──────────────────────────────────────────────────────────
 

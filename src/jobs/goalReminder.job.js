@@ -16,7 +16,7 @@ exports.sendGoalReminders = async () => {
   for (const goal of goals) {
     let shouldSend = false;
 
-    if (goal.reminderFrequency === "daily") {
+    if (goal.reminderFrequency === "daily") {  
       shouldSend = true;
     } else if (goal.reminderFrequency === "weekly" && dayOfWeek === 1) {
       shouldSend = true;

@@ -311,7 +311,21 @@ exports.updateGoal = async (req, res) => {
             goal.title = body.title;
         }
 
-        if (body.targetDate) goal.targetDate = body.targetDate;
+        if (body.targetDate) {
+            const newDate = new Date(body.targetDate);
+            const today = new Date();
+
+            if (today > new Date(goal.targetDate)) {
+                // Goal is overdue — only allow extending to a future date
+                if (newDate <= today) {
+                    return res.status(400).json({
+                        success: false,
+                        message: 'Overdue goals can only be extended to a future date'
+                    });
+                }
+            }
+            goal.targetDate = newDate;
+        }
 
         if (body.targetAmount !== undefined) {
             if (body.targetAmount <= 0) return res.status(400).json({ success: false, message: 'Target amount must be positive' });

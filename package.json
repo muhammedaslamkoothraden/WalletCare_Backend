@@ -28,6 +28,7 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.1",
     "nodemon": "^3.1.11",
+    "pdfkit": "^0.18.0",
     "redis": "^5.11.0",
     "socket.io": "^4.8.3"
   },
@@ -38,6 +39,5 @@
   "bugs": {
     "url": "https://github.com/muhammedaslamkoothraden/WalletCare_Backend/issues"
   },
-  "homepage": "https://github.com/muhammedaslamkoothraden/WalletCare_Backend#readme",
-  "devDependencies": {}
+  "homepage": "https://github.com/muhammedaslamkoothraden/WalletCare_Backend#readme"
 }
