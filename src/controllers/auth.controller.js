@@ -5,6 +5,19 @@ const bcrypt = require("bcryptjs");
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken, verifyResetToken } = require("../utils/token");
 const hashToken = require("../utils/hashToken");
 
+// Helper — retry operation with exponential backoff (for MongoDB Atlas transient failures)
+const retryOperation = async (fn, retries = 3, delay = 1000) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i === retries - 1) throw err;
+      console.warn(`Retry ${i + 1}/${retries} after error:`, err.message);
+      await new Promise(res => setTimeout(res, delay * (i + 1)));
+    }
+  }
+};
+
 // helper — handles resend errors consistently across routes
 const handleResendError = (resendError, res) => {
   if (resendError.message === "COOLDOWN_ACTIVE") {
@@ -207,11 +220,12 @@ exports.resetPassword = async (req, res) => {
   }
 };
 
-// Refresh Access Token — atomic token rotation, detects replay attacks
+// Refresh Access Token — atomic token rotation with retry logic and proper error handling
 exports.refreshAccessToken = async (req, res) => {
   try {
     const { refreshToken } = req.body;
 
+    // Verify refresh token
     let decoded;
     try {
       decoded = verifyRefreshToken(refreshToken);
@@ -225,26 +239,49 @@ exports.refreshAccessToken = async (req, res) => {
     const hashedToken = hashToken(refreshToken);
     const newRefreshToken = generateRefreshToken(decoded.userId);
 
-    // atomic swap — find by old hash, replace with new hash in one query
-    // prevents replay attack — if already rotated, user will be null
-    const user = await User.findOneAndUpdate(
-      { _id: decoded.userId, refreshToken: hashedToken },
-      { $set: { refreshToken: hashToken(newRefreshToken) } },
-      { new: false }
-    );
+    // Atomic swap with retry — find by old hash, replace with new hash in one query
+    // Prevents replay attack — if already rotated, user will be null
+    let user;
+    try {
+      user = await retryOperation(() =>
+        User.findOneAndUpdate(
+          { _id: decoded.userId, refreshToken: hashedToken },
+          { $set: { refreshToken: hashToken(newRefreshToken) } },
+          { new: false }
+        )
+      );
+    } catch (dbError) {
+      // Database query failed after retries (network issue, Atlas pause, timeout, etc.)
+      // DO NOT wipe the token — this is a transient error, not a security issue
+      console.error("refreshAccessToken DB error after retries:", dbError);
+      return res.status(503).json({ message: "Database temporarily unavailable. Please try again." });
+    }
 
     if (!user) {
-      // reuse detected — wipe token from DB and force re-login
+      // Query succeeded but no user found with matching token
+      // This could mean: (a) token reuse detected, or (b) user deleted
+      
+      // First check if user still exists
+      const userExists = await User.findById(decoded.userId);
+      
+      if (!userExists) {
+        // User account was deleted
+        return res.status(401).json({ message: "User not found" });
+      }
+
+      // User exists but token doesn't match = reuse detected
+      // Wipe the stored token to force re-login on all devices
       await User.findByIdAndUpdate(decoded.userId, { refreshToken: null });
       return res.status(401).json({ message: "Refresh token reuse detected. Please login again." });
     }
 
-    // generate access token using role from DB — decoded token has no role
+    // Success — generate new access token using role from DB
+    // (decoded refresh token doesn't contain role, only userId)
     const newAccessToken = generateAccessToken(user._id, user.role);
 
     return res.status(200).json({
       accessToken: newAccessToken,
-      refreshToken: newRefreshToken, // client must save this — old one is now dead
+      refreshToken: newRefreshToken, // client must save this — old one is now invalidated
     });
 
   } catch (error) {
