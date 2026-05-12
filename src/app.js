@@ -13,7 +13,7 @@ const analyticsRoutes = require("./routes/analytics.routes");
 const feedbackRoutes = require("./routes/feedback.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const testRoutes = require("./routes/test.routes");
-const monthlySummaryRoutes = require("./routes/MonthlySummary.routes");
+const monthlySummaryRoutes = require("./routes/Monthlysummary.routes");
 
 const adminRoutes = require("./routes/admin.routes");
 const authMiddleware = require("./middlewares/auth.middleware");
