@@ -13,6 +13,7 @@ const analyticsRoutes = require("./routes/analytics.routes");
 const feedbackRoutes = require("./routes/feedback.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const testRoutes = require("./routes/test.routes");
+const monthlySummaryRoutes = require("./routes/monthlySummary.routes");
 
 const adminRoutes = require("./routes/admin.routes");
 const authMiddleware = require("./middlewares/auth.middleware");
@@ -60,6 +61,7 @@ app.use("/api/goals", authMiddleware, goalRoutes);
 app.use("/api/analytics", authMiddleware, analyticsRoutes);
 app.use("/api/feedback", authMiddleware, feedbackRoutes);
 app.use("/api/notifications", authMiddleware, notificationRoutes);
+app.use("/api/summary", monthlySummaryRoutes);
 app.use("/api/test", testRoutes);
 
 // ─── ERROR HANDLING ──────────────────────────────────────────────────────────

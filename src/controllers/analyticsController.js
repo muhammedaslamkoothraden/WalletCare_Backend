@@ -94,7 +94,7 @@ exports.getAnalyticsDashboard = async (req, res) => {
           },
         },
         { $sort: { amount: -1 } },
-        { $limit: 5 },
+       
       ]),
       Ledger.countDocuments(baseMatch),
     ]);
@@ -106,14 +106,17 @@ exports.getAnalyticsDashboard = async (req, res) => {
     const netSavings = income - expense;
     const spendPercentage = income > 0 ? (expense / income) * 100 : 0;
 
-    let healthStatus = 'Healthy';
-    if (income === 0 && expense > 0) {
-      healthStatus = 'High';
-    } else if (spendPercentage > 70) {
-      healthStatus = 'High';
-    } else if (spendPercentage > 40) {
-      healthStatus = 'Moderate';
-    }
+ let healthStatus = 'Healthy';
+
+if (income === 0 && expense > 0) {
+  healthStatus = 'Critical';
+} else if (netSavings < 0) {
+  healthStatus = 'Deficit';
+} else if (spendPercentage > 80) {
+  healthStatus = 'High';
+} else if (spendPercentage > 50) {
+  healthStatus = 'Moderate';
+}
 
     const designColors = ['#ef4444', '#f59e0b', '#8b5cf6', '#3b82f6', '#10b981'];
 

@@ -42,3 +42,13 @@ cron.schedule("0 20 * * *", async () => {
   console.log("[Cron] Running daily inactivity job...");
   await checkDailyInactivity();
 });
+
+/*
+Monthly AI Summary Notification Job
+Runs on the 1st of every month at 10:00 AM IST (UTC+5:30 = 04:30 UTC)
+Summarises last month's spending for all active users using Claude AI.
+*/
+cron.schedule("30 4 1 * *", async () => {
+  console.log("[Cron] Running monthly AI summary job...");
+  await runMonthlySummaryJob();
+});

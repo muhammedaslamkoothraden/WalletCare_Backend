@@ -29,11 +29,7 @@ function computeBalanceDelta(direction, transactionType, rawAmount) {
     case 'GOAL_DEALLOCATION':
       // Money is released back from the goal envelope into the account.
       return { balanceChange: amount, reservedChange: zero };
-
-    case 'GOAL_COMPLETION':
-      // Goal is fully spent on its intended purpose — treated identically to
-      // GOAL_ALLOCATION: money leaves the account (no deallocation back first).
-      return { balanceChange: amount.negated(), reservedChange: zero };
+      
 
     case 'ACCOUNT_TRANSFER_IN':
       return { balanceChange: amount, reservedChange: zero };
