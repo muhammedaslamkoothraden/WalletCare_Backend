@@ -16,7 +16,7 @@ const { adminMiddleware } = require('../middlewares/admin.middleware');
 const {
   getMyMonthlySummary,
   triggerMonthlySummaryBatch,
-} = require('../controllers/monthlySummary.controller');
+} = require('../controllers/Monthlysummary.controller');
 
 // User endpoint — requires valid JWT
 router.get('/monthly', protect, getMyMonthlySummary);
