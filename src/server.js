@@ -26,18 +26,26 @@ const server = http.createServer(app);
 socketService.init(server);
 
 /**
+/**
  * 4. START SERVER
  */
 const PORT = process.env.PORT || 5000;
+const HOST = "0.0.0.0"; // Allow external access
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
+  // Get your Local IP address to show in the console
+  const networkInterfaces = require('os').networkInterfaces();
+  const localIp = Object.values(networkInterfaces)
+    .flat()
+    .find(i => i.family === 'IPv4' && !i.internal)?.address;
+
   console.log("-----------------------------------------");
-  console.log(`🚀 Server running on: http://localhost:${PORT}`);
+  console.log(`🚀 Server is globally accessible!`);
+  console.log(`🏠 Local:   http://localhost:${PORT}`);
+  console.log(`🌐 Network: http://${localIp || HOST}:${PORT}`); // This is what you put in Flutter
   console.log(`📡 WebSocket: Active & Listening`);
-  console.log(`🛠️  Environment: ${process.env.NODE_ENV || "development"}`);
   console.log("-----------------------------------------");
 });
-
 /**
  * 5. GRACEFUL SHUTDOWN (Optional but Recommended)
  * Ensures that connections are closed properly when the process terminates.
